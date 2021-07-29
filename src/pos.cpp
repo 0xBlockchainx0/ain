@@ -8,6 +8,7 @@
 #include <logging.h>
 #include <masternodes/masternodes.h>
 #include <sync.h>
+#include <validation.h>
 
 extern RecursiveMutex cs_main;
 
@@ -46,7 +47,7 @@ bool CheckHeaderSignature(const CBlockHeader& blockHeader) {
     return true;
 }
 
-bool ContextualCheckProofOfStake(const CBlockHeader& blockHeader, const Consensus::Params& params, CCustomCSView* mnView) {
+bool ContextualCheckProofOfStake(const CBlockHeader& blockHeader, const Consensus::Params& params, CCustomCSView* mnView, CheckContextState& ctxState) {
     /// @todo may be this is tooooo optimistic? need more validation?
     if (blockHeader.height == 0 && blockHeader.GetHash() == params.hashGenesisBlock) {
         return true;
@@ -58,6 +59,8 @@ bool ContextualCheckProofOfStake(const CBlockHeader& blockHeader, const Consensu
     }
     uint256 masternodeID;
     int64_t creationHeight;
+    std::vector<int64_t> subNodesBlockTime;
+    uint16_t timelock{0};
     {
         // check that block minter exists and active at the height of the block
         AssertLockHeld(cs_main);
@@ -71,41 +74,57 @@ bool ContextualCheckProofOfStake(const CBlockHeader& blockHeader, const Consensu
             return false;
         }
         creationHeight = int64_t(nodePtr->creationHeight);
+
+        if (blockHeader.height >= static_cast<uint64_t>(params.EunosPayaHeight)) {
+            timelock = mnView->GetTimelock(masternodeID, *nodePtr, blockHeader.height);
+        }
+
+        // Check against EunosPayaHeight here for regtest, does not hurt other networks.
+        // Redundant checks, but intentionally kept for easier fork accounting.
+        if (blockHeader.height >= static_cast<uint64_t>(params.DakotaCrescentHeight) || blockHeader.height >= static_cast<uint64_t>(params.EunosPayaHeight)) {
+            const auto usedHeight = blockHeader.height <= static_cast<uint64_t>(params.EunosHeight) ? creationHeight : blockHeader.height;
+
+            // Get block times
+            subNodesBlockTime = mnView->GetBlockTimes(nodePtr->operatorAuthAddress, usedHeight, creationHeight, timelock);
+        }
     }
+
     // checking PoS kernel is faster, so check it first
-    if (!CheckKernelHash(blockHeader.stakeModifier, blockHeader.nBits, creationHeight, (int64_t) blockHeader.GetBlockTime(), blockHeader.height, masternodeID, params)) {
+    if (!CheckKernelHash(blockHeader.stakeModifier, blockHeader.nBits, creationHeight, blockHeader.GetBlockTime(),blockHeader.height,
+                         masternodeID, params, subNodesBlockTime, timelock, ctxState)) {
         return false;
     }
 
     /// @todo Make sure none mint a big amount of continuous blocks
-
     return CheckHeaderSignature(blockHeader);
 }
 
 bool CheckProofOfStake(const CBlockHeader& blockHeader, const CBlockIndex* pindexPrev, const Consensus::Params& params, CCustomCSView* mnView) {
 
     // this is our own check of own minted block (just to remember)
-    return CheckStakeModifier(pindexPrev, blockHeader) && ContextualCheckProofOfStake(blockHeader, params, mnView);
+    CheckContextState ctxState;
+    return CheckStakeModifier(pindexPrev, blockHeader) && ContextualCheckProofOfStake(blockHeader, params, mnView, ctxState);
 }
 
-unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params::PoS& params)
+unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params::PoS& params, bool eunos)
 {
     if (params.fNoRetargeting)
         return pindexLast->nBits;
 
     // Limit adjustment step
     int64_t nActualTimespan = pindexLast->GetBlockTime() - nFirstBlockTime;
-    if (nActualTimespan < params.nTargetTimespan/4)
-        nActualTimespan = params.nTargetTimespan/4;
-    if (nActualTimespan > params.nTargetTimespan*4)
-        nActualTimespan = params.nTargetTimespan*4;
+    const auto& nTargetTimespan = eunos ? params.nTargetTimespanV2 : params.nTargetTimespan;
+    if (nActualTimespan < nTargetTimespan/4)
+        nActualTimespan = nTargetTimespan/4;
+    if (nActualTimespan > nTargetTimespan*4)
+        nActualTimespan = nTargetTimespan*4;
 
     // Retarget
     const arith_uint256 bnDiffLimit = UintToArith256(params.diffLimit);
     arith_uint256 bnNew;
     bnNew.SetCompact(pindexLast->nBits);
     bnNew *= nActualTimespan;
-    bnNew /= params.nTargetTimespan;
+    bnNew /= nTargetTimespan;
 
     if (bnNew > bnDiffLimit)
         bnNew = bnDiffLimit;
@@ -113,29 +132,35 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
     return bnNew.GetCompact();
 }
 
-unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params::PoS& params)
+unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, int64_t blockTime, const Consensus::Params& params)
 {
     assert(pindexLast != nullptr);
-    if (params.fNoRetargeting)
+    if (params.pos.fNoRetargeting)
         return pindexLast->nBits;
 
-    unsigned int nProofOfWorkLimit = UintToArith256(params.diffLimit).GetCompact();
+    unsigned int nProofOfWorkLimit = UintToArith256(params.pos.diffLimit).GetCompact();
+
+    int nHeight{pindexLast->nHeight + 1};
+    bool eunos{nHeight > params.EunosHeight};
+    const auto interval = eunos ? params.pos.DifficultyAdjustmentIntervalV2() : params.pos.DifficultyAdjustmentInterval();
+    bool skipChange = eunos ? (nHeight - params.EunosHeight) % interval != 0 : nHeight % interval != 0;
 
     // Only change once per difficulty adjustment interval
-    if ((pindexLast->nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
+    if (skipChange)
     {
-        if (params.fAllowMinDifficultyBlocks)
+        // Regtest only
+        if (params.pos.fAllowMinDifficultyBlocks)
         {
             // Special difficulty rule for testnet:
-            // If the new block's timestamp is more than 2* 10 minutes
+            // If the new block's timestamp is more than 2* 30 seconds
             // then allow mining of a min-difficulty block.
-            if (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nTargetSpacing*2)
+            if (blockTime > pindexLast->GetBlockTime() + params.pos.nTargetSpacing*2)
                 return nProofOfWorkLimit;
             else
             {
                 // Return the last non-special-min-difficulty-rules-block
                 const CBlockIndex* pindex = pindexLast;
-                while (pindex->pprev && pindex->nHeight % params.DifficultyAdjustmentInterval() != 0 && pindex->nBits == nProofOfWorkLimit)
+                while (pindex->pprev && pindex->nHeight % params.pos.DifficultyAdjustmentInterval() != 0 && pindex->nBits == nProofOfWorkLimit)
                     pindex = pindex->pprev;
                 return pindex->nBits;
             }
@@ -144,12 +169,12 @@ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHead
     }
 
     // Go back by what we want to be 14 days worth of blocks
-    int nHeightFirst = pindexLast->nHeight - (params.DifficultyAdjustmentInterval()-1);
+    int nHeightFirst = pindexLast->nHeight - (interval - 1);
     assert(nHeightFirst >= 0);
     const CBlockIndex* pindexFirst = pindexLast->GetAncestor(nHeightFirst);
     assert(pindexFirst);
 
-    return pos::CalculateNextWorkRequired(pindexLast, pindexFirst->GetBlockTime(), params);
+    return pos::CalculateNextWorkRequired(pindexLast, pindexFirst->GetBlockTime(), params.pos, eunos);
 }
 
 boost::optional<std::string> SignPosBlock(std::shared_ptr<CBlock> pblock, const CKey &key) {
@@ -157,14 +182,6 @@ boost::optional<std::string> SignPosBlock(std::shared_ptr<CBlock> pblock, const 
     if (!pblock->sig.empty()) {
         throw std::logic_error{"Only non-complete PoS block templates are accepted"};
     }
-
-    // coinstakeTx
-    CMutableTransaction coinstakeTx{*pblock->vtx[0]};
-
-    // Update coinstakeTx after signing
-    pblock->vtx[0] = MakeTransactionRef(coinstakeTx);
-
-    pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
 
     bool signingRes = key.SignCompact(pblock->GetHashToSign(), pblock->sig);
     if (!signingRes) {

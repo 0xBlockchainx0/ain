@@ -83,14 +83,14 @@ BRWallet *BRWalletNew(BRTransaction *transactions[], size_t txCount, BRMasterPub
 // info is a void pointer that will be passed along with each callback call
 // void balanceChanged(void *, uint64_t) - called when the wallet balance changes
 // void txAdded(void *, BRTransaction *) - called when transaction is added to the wallet
-// void txUpdated(void *, const UInt256[], size_t, uint32_t, uint32_t)
+// void txUpdated(void *, const UInt256[], size_t, uint32_t, uint32_t, const UInt256&)
 //   - called when the blockHeight or timestamp of previously added transactions are updated
 // void txDeleted(void *, UInt256, int, int) - called when a previously added transaction is removed from the wallet
 void BRWalletSetCallbacks(BRWallet *wallet, void *info,
                           void (*balanceChanged)(void *info, uint64_t balance),
                           void (*txAdded)(void *info, BRTransaction *tx),
                           void (*txUpdated)(void *info, const UInt256 txHashes[], size_t txCount, uint32_t blockHeight,
-                                            uint32_t timestamp),
+                                            uint32_t timestamp, const UInt256& blockHash),
                           void (*txDeleted)(void *info, UInt256 txHash, int notifyUser, int recommendRescan));
 
 // wallets are composed of chains of addresses
@@ -153,11 +153,11 @@ void BRWalletSetFeePerKb(BRWallet *wallet, uint64_t feePerKb);
 
 // returns an unsigned transaction that sends the specified amount from the wallet to the given address
 // result must be freed using BRTransactionFree()
-BRTransaction *BRWalletCreateTransaction(BRWallet *wallet, uint64_t amount, const char *addr, std::string changeAddress, uint64_t feeRate);
+BRTransaction *BRWalletCreateTransaction(BRWallet *wallet, uint64_t amount, const char *addr, std::string changeAddress, uint64_t feeRate, std::string& errorMsg);
 
 // returns an unsigned transaction that satisifes the given transaction outputs
 // result must be freed using BRTransactionFree()
-BRTransaction *BRWalletCreateTxForOutputs(BRWallet *wallet, const BRTxOutput outputs[], size_t outCount, std::string changeAddress, uint64_t feeRate = 0);
+BRTransaction *BRWalletCreateTxForOutputs(BRWallet *wallet, const BRTxOutput outputs[], size_t outCount, std::string changeAddress, std::string& errorMsg, uint64_t feeRate = 0);
 
 // signs any inputs in tx that can be signed using private keys from the wallet
 // seed is the master private key (wallet seed) corresponding to the master public key given when the wallet was created
@@ -188,7 +188,7 @@ int BRWalletTransactionIsVerified(BRWallet *wallet, const BRTransaction *tx);
 // set the block heights and timestamps for the given transactions
 // use height TX_UNCONFIRMED and timestamp 0 to indicate a tx should remain marked as unverified (not 0-conf safe)
 void BRWalletUpdateTransactions(BRWallet *wallet, const UInt256 txHashes[], size_t txCount, uint32_t blockHeight,
-                                uint32_t timestamp);
+                                uint32_t timestamp, const UInt256 &blockHash);
     
 // marks all transactions confirmed after blockHeight as unconfirmed (useful for chain re-orgs)
 void BRWalletSetTxUnconfirmedAfter(BRWallet *wallet, uint32_t blockHeight);
@@ -234,6 +234,9 @@ int64_t BRBitcoinAmount(int64_t localAmount, double price);
 #ifdef __cplusplus
 }
 #endif
+
+// Returns all previously generated user addresses including change
+std::set<std::string> BRWalletAllUserAddrs(BRWallet *wallet);
 
 // Whether an address belongs to the user
 SPVTxType BRWalletIsMine(BRWallet *wallet, const UInt160& hash160, const bool htlc);

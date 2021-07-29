@@ -1,12 +1,12 @@
 dnl require autoconf 2.60 (AS_ECHO/AS_ECHO_N)
 AC_PREREQ([2.60])
 define(_CLIENT_VERSION_MAJOR, 1)
-define(_CLIENT_VERSION_MINOR, 0)
+define(_CLIENT_VERSION_MINOR, 8)
 define(_CLIENT_VERSION_REVISION, 0)
 define(_CLIENT_VERSION_BUILD, 0)
 define(_CLIENT_VERSION_RC, 0)
 define(_CLIENT_VERSION_IS_RELEASE, true)
-define(_COPYRIGHT_YEAR, 2020)
+define(_COPYRIGHT_YEAR, 2021)
 define(_COPYRIGHT_HOLDERS,[The %s developers])
 define(_COPYRIGHT_HOLDERS_SUBSTITUTION,[[DeFi Blockchain]])
 AC_INIT([DeFi Blockchain],m4_join([.], _CLIENT_VERSION_MAJOR, _CLIENT_VERSION_MINOR, _CLIENT_VERSION_REVISION, m4_if(_CLIENT_VERSION_BUILD, [0], [], _CLIENT_VERSION_BUILD))m4_if(_CLIENT_VERSION_RC, [0], [], [rc]_CLIENT_VERSION_RC),[https://github.com/defich/ain/issues],[defi],[https://defichain.io/])
@@ -125,11 +125,6 @@ AC_ARG_ENABLE(tests,
     [use_tests=$enableval],
     [use_tests=yes])
 
-AC_ARG_ENABLE(gui-tests,
-    AS_HELP_STRING([--disable-gui-tests],[do not compile GUI tests (default is to compile if GUI and tests enabled)]),
-    [use_gui_tests=$enableval],
-    [use_gui_tests=$use_tests])
-
 AC_ARG_WITH([rapidcheck],
   [AS_HELP_STRING([--with-rapidcheck],
   [enable RapidCheck property-based tests (default is yes if librapidcheck is found)])],
@@ -151,12 +146,6 @@ AC_ARG_ENABLE([fuzz],
     [enable building of fuzz targets (default no). enabling this will disable all other targets]),
     [enable_fuzz=$enableval],
     [enable_fuzz=no])
-
-AC_ARG_WITH([qrencode],
-  [AS_HELP_STRING([--with-qrencode],
-  [enable QR code support (default is yes if qt is enabled and libqrencode is found)])],
-  [use_qr=$withval],
-  [use_qr=auto])
 
 AC_ARG_ENABLE([hardening],
   [AS_HELP_STRING([--disable-hardening],
@@ -221,13 +210,6 @@ AC_ARG_ENABLE([zmq],
   [disable ZMQ notifications])],
   [use_zmq=$enableval],
   [use_zmq=yes])
-AC_ARG_ENABLE([bip70],
-  [AS_HELP_STRING([--disable-bip70],
-  [disable BIP70 (payment protocol) support in GUI (enabled by default)])],
-  [enable_bip70=$enableval],
-  [enable_bip70=auto])
-
-AC_ARG_WITH([protoc-bindir],[AS_HELP_STRING([--with-protoc-bindir=BIN_DIR],[specify protoc bin path])], [protoc_bin_path=$withval], [])
 
 AC_ARG_ENABLE(man,
     [AS_HELP_STRING([--disable-man],
@@ -548,20 +530,10 @@ case $host in
          dnl It's safe to add these paths even if the functionality is disabled by
          dnl the user (--without-wallet for example).
 
-         openssl_prefix=`$BREW --prefix openssl 2>/dev/null`
          bdb_prefix=`$BREW --prefix berkeley-db4 2>/dev/null`
-         qt5_prefix=`$BREW --prefix qt5 2>/dev/null`
-         if test x$openssl_prefix != x; then
-           PKG_CONFIG_PATH="$openssl_prefix/lib/pkgconfig:$PKG_CONFIG_PATH"
-           export PKG_CONFIG_PATH
-         fi
          if test x$bdb_prefix != x; then
            CPPFLAGS="$CPPFLAGS -I$bdb_prefix/include"
            LIBS="$LIBS -L$bdb_prefix/lib"
-         fi
-         if test x$qt5_prefix != x; then
-           PKG_CONFIG_PATH="$qt5_prefix/lib/pkgconfig:$PKG_CONFIG_PATH"
-           export PKG_CONFIG_PATH
          fi
        fi
      else
@@ -1031,7 +1003,7 @@ AX_BOOST_CHRONO
 dnl Boost 1.56 through 1.62 allow using std::atomic instead of its own atomic
 dnl counter implementations. In 1.63 and later the std::atomic approach is default.
 m4_pattern_allow(DBOOST_AC_USE_STD_ATOMIC) dnl otherwise it's treated like a macro
-BOOST_CPPFLAGS="-DBOOST_SP_USE_STD_ATOMIC -DBOOST_AC_USE_STD_ATOMIC $BOOST_CPPFLAGS"
+BOOST_CPPFLAGS="-DBOOST_MPL_CFG_NO_PREPROCESSED_HEADERS -DBOOST_MPL_LIMIT_LIST_SIZE=50 -DBOOST_SP_USE_STD_ATOMIC -DBOOST_AC_USE_STD_ATOMIC $BOOST_CPPFLAGS"
 
 if test x$use_reduce_exports = xyes; then
   AC_MSG_CHECKING([for working boost reduced exports])
@@ -1189,9 +1161,6 @@ if test x$use_pkgconfig = xyes; then
   m4_ifdef(
     [PKG_CHECK_MODULES],
     [
-      PKG_CHECK_MODULES([SSL], [libssl],, [AC_MSG_ERROR(openssl not found.)])
-      PKG_CHECK_MODULES([CRYPTO], [libcrypto],,[AC_MSG_ERROR(libcrypto not found.)])
-
       if test x$build_defi_cli$build_defid$use_tests != xnononono; then
         PKG_CHECK_MODULES([EVENT], [libevent],, [AC_MSG_ERROR(libevent not found.)])
         if test x$TARGET_OS != xwindows; then
@@ -1211,12 +1180,6 @@ if test x$use_pkgconfig = xyes; then
     ]
   )
 else
-  AC_CHECK_HEADER([openssl/crypto.h],,AC_MSG_ERROR(libcrypto headers missing))
-  AC_CHECK_LIB([crypto],      [main],CRYPTO_LIBS=-lcrypto, AC_MSG_ERROR(libcrypto missing))
-
-  AC_CHECK_HEADER([openssl/ssl.h],, AC_MSG_ERROR(libssl headers missing),)
-  AC_CHECK_LIB([ssl],         [main],SSL_LIBS=-lssl, AC_MSG_ERROR(libssl missing))
-
   if test x$build_defi_cli$build_defid$use_tests != xnononono; then
     AC_CHECK_HEADER([event2/event.h],, AC_MSG_ERROR(libevent headers missing),)
     AC_CHECK_LIB([event],[main],EVENT_LIBS=-levent,AC_MSG_ERROR(libevent missing))
@@ -1248,13 +1211,6 @@ else
     esac
   fi
 fi
-
-save_CXXFLAGS="${CXXFLAGS}"
-CXXFLAGS="${CXXFLAGS} ${CRYPTO_CFLAGS} ${SSL_CFLAGS}"
-AC_CHECK_DECLS([EVP_MD_CTX_new],,,[AC_INCLUDES_DEFAULT
-#include <openssl/x509_vfy.h>
-])
-CXXFLAGS="${save_CXXFLAGS}"
 
 dnl RapidCheck property-based testing
 
@@ -1423,7 +1379,7 @@ else
 fi
 
 if test x$build_defi_wallet$build_defi_cli$build_defi_tx$build_defi_libs$build_defid$use_bench$use_tests = xnononononononono; then
-  AC_MSG_ERROR([No targets! Please specify at least one of: --with-utils --with-libs --with-daemon --with-gui --enable-bench or --enable-tests])
+  AC_MSG_ERROR([No targets! Please specify at least one of: --with-utils --with-libs --with-daemon --enable-bench or --enable-tests])
 fi
 
 AM_CONDITIONAL([TARGET_DARWIN], [test x$TARGET_OS = xdarwin])
@@ -1432,9 +1388,7 @@ AM_CONDITIONAL([TARGET_WINDOWS], [test x$TARGET_OS = xwindows])
 AM_CONDITIONAL([ENABLE_WALLET],[test x$enable_wallet = xyes])
 AM_CONDITIONAL([ENABLE_TESTS],[test x$BUILD_TEST = xyes])
 AM_CONDITIONAL([ENABLE_FUZZ],[test x$enable_fuzz = xyes])
-AM_CONDITIONAL([ENABLE_BIP70],[test x$enable_bip70 = xyes])
 AM_CONDITIONAL([ENABLE_BENCH],[test x$use_bench = xyes])
-AM_CONDITIONAL([USE_QRCODE], [test x$use_qr = xyes])
 AM_CONDITIONAL([USE_LCOV],[test x$use_lcov = xyes])
 AM_CONDITIONAL([GLIBC_BACK_COMPAT],[test x$use_glibc_compat = xyes])
 AM_CONDITIONAL([HARDEN],[test x$use_hardening = xyes])
@@ -1496,14 +1450,11 @@ AC_SUBST(TESTDEFS)
 AC_SUBST(LEVELDB_TARGET_FLAGS)
 AC_SUBST(MINIUPNPC_CPPFLAGS)
 AC_SUBST(MINIUPNPC_LIBS)
-AC_SUBST(CRYPTO_LIBS)
-AC_SUBST(SSL_LIBS)
 AC_SUBST(EVENT_LIBS)
 AC_SUBST(EVENT_PTHREADS_LIBS)
 AC_SUBST(ZMQ_LIBS)
-AC_SUBST(PROTOBUF_LIBS)
 AC_SUBST(QR_LIBS)
-AC_CONFIG_FILES([Makefile src/Makefile doc/man/Makefile share/setup.nsi share/qt/Info.plist test/config.ini])
+AC_CONFIG_FILES([Makefile src/Makefile doc/man/Makefile share/setup.nsi test/config.ini])
 AC_CONFIG_FILES([contrib/devtools/split-debug.sh],[chmod +x contrib/devtools/split-debug.sh])
 AM_COND_IF([HAVE_DOXYGEN], [AC_CONFIG_FILES([doc/Doxyfile])])
 AC_CONFIG_LINKS([contrib/filter-lcov.py:contrib/filter-lcov.py])

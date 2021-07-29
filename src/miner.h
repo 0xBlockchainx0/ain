@@ -164,7 +164,7 @@ public:
     BlockAssembler(const CChainParams& params, const Options& options);
 
     /** Construct a new block template with coinbase to scriptPubKeyIn */
-    std::unique_ptr<CBlockTemplate> CreateNewBlock(const CScript& scriptPubKeyIn);
+    std::unique_ptr<CBlockTemplate> CreateNewBlock(const CScript& scriptPubKeyIn, int64_t blockTime = 0);
 
     static Optional<int64_t> m_last_block_num_txs;
     static Optional<int64_t> m_last_block_weight;
@@ -180,7 +180,7 @@ private:
     /** Add transactions based on feerate including unconfirmed ancestors
       * Increments nPackagesSelected / nDescendantsUpdated with corresponding
       * statistics from the package selection (for logging statistics). */
-    void addPackageTxs(int &nPackagesSelected, int &nDescendantsUpdated, int nHeight) EXCLUSIVE_LOCKS_REQUIRED(mempool.cs);
+    void addPackageTxs(int &nPackagesSelected, int &nDescendantsUpdated, int nHeight, CCustomCSView &view) EXCLUSIVE_LOCKS_REQUIRED(mempool.cs);
 
     // helper functions for addPackageTxs()
     /** Remove confirmed (inBlock) entries from given set */
@@ -223,34 +223,38 @@ namespace pos {
         };
 
         /// always forward by value to avoid dangling pointers
-        /// @return number of minted blocks
-        int32_t operator()(Args stakerParams, CChainParams chainparams);
+        void operator()(std::vector<Args> stakerParams, CChainParams chainparams);
     };
 
     class Staker {
     private:
-        int64_t nLastCoinStakeSearchTime = GetAdjustedTime() - 60;
+        static uint256 lastBlockSeen;
 
     public:
         enum class Status {
             error,
             initWaiting,
             stakeWaiting,
-            criminalWaiting,
+            stakeReady,
             minted,
         };
 
+        Staker::Status init(const CChainParams& chainparams);
         Staker::Status stake(const CChainParams& chainparams, const ThreadStaker::Args& args);
+
+        // declaration static variables
+        // Map to store [master node id : last block creation attempt timestamp] for local master nodes
+        static std::map<uint256, int64_t> mapMNLastBlockCreationAttemptTs;
+        static std::atomic_bool cs_MNLastBlockCreationAttemptTs;
+
+        // Variables to manage search time across threads
+        static int64_t nLastCoinStakeSearchTime;
+        static int64_t nFutureTime;
+
     private:
-        CBlockIndex* getTip();
         template <typename F>
-        bool withSearchInterval(F&& f);
+        void withSearchInterval(F&& f, int64_t height);
     };
-
-    // Map to store [master node id : last block creation attempt timestamp] for local master nodes
-    static std::map<uint256, int64_t> mapMNLastBlockCreationAttemptTs;
-    static std::atomic_bool cs_MNLastBlockCreationAttemptTs(false);
-
 }
 
 #endif // DEFI_MINER_H

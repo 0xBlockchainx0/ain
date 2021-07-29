@@ -20,6 +20,15 @@ class CCoinsViewCache;
 
 class CCustomCSView;
 
+/// A state that's passed along between various 
+/// Check functions like CheckBlocks, ContextualCheckProofOfStake,
+/// CheckKernelHash, etc to maintain context across the
+/// calls. This is currently mainly only used in the context of
+/// subnet nodes. 
+struct CheckContextState {
+    uint8_t subNode = 0;
+};
+
 namespace pos {
 
     bool CheckStakeModifier(const CBlockIndex* pindexPrev, const CBlockHeader& blockHeader);
@@ -28,14 +37,14 @@ namespace pos {
     bool CheckHeaderSignature(const CBlockHeader& block);
 
 /// Check kernel hash target and coinstake signature
-    bool ContextualCheckProofOfStake(const CBlockHeader& blockHeader, const Consensus::Params& params, CCustomCSView* mnView);
+    bool ContextualCheckProofOfStake(const CBlockHeader& blockHeader, const Consensus::Params& params, CCustomCSView* mnView, CheckContextState& ctxState);
 
 /// Check kernel hash target and coinstake signature. Check that block coinstakeTx matches header
     bool CheckProofOfStake(const CBlockHeader& blockHeader, const CBlockIndex* pindexPrev, const Consensus::Params& params, CCustomCSView* mnView);
 
-    unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params::PoS& params);
+    unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, int64_t blockTime, const Consensus::Params& params);
 
-    unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params::PoS& params);
+    unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params::PoS& params, bool eunos = false);
 
     boost::optional<std::string> SignPosBlock(std::shared_ptr<CBlock> pblock, const CKey &key);
 

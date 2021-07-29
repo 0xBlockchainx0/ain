@@ -31,6 +31,9 @@
 
 #include <boost/thread.hpp>
 
+// Anchor DB storage version, increment to wipe anchor and SPV data.
+#define SPV_DB_VERSION 1
+
 typedef struct BRWalletStruct BRWallet;
 typedef struct BRPeerManagerStruct BRPeerManager;
 typedef struct BRMerkleBlockStruct BRMerkleBlock;
@@ -96,6 +99,7 @@ protected:
 public:
     CSpvWrapper(bool isMainnet, size_t nCacheSize, bool fMemory = false, bool fWipe = false);
     virtual ~CSpvWrapper();
+    void Load();
 
     virtual void Connect();
     virtual void Disconnect();
@@ -120,7 +124,7 @@ public:
     /// Wallet callbacks
     void OnBalanceChanged(uint64_t balance);
     void OnTxAdded(BRTransaction *tx);
-    void OnTxUpdated(const UInt256 txHashes[], size_t txCount, uint32_t blockHeight, uint32_t timestamp);
+    void OnTxUpdated(const UInt256 txHashes[], size_t txCount, uint32_t blockHeight, uint32_t timestamp, const UInt256 &blockHash);
     void OnTxDeleted(UInt256 txHash, int notifyUser, int recommendRescan);
     /// Peermanager callbacks
     void OnSyncStarted();
@@ -130,11 +134,18 @@ public:
     void OnSavePeers(int replace, const BRPeer peers[], size_t peersCount);
     void OnThreadCleanup();
 
+    /// Wallet notifications
+    void OnBlockNotify(const UInt256& blockHash);
+    void OnTxNotify(const UInt256& txHash);
+
     // Get time stamp of Bitcoin TX
     uint32_t ReadTxTimestamp(uint256 const & hash);
 
     // Get block height of Bitcoin TX
     uint32_t ReadTxBlockHeight(uint256 const & hash);
+
+    // Bitcoin networking calls
+    UniValue GetPeers();
 
     // Bitcoin Address calls
     std::string AddBitcoinAddress(const CPubKey &new_key);
@@ -142,21 +153,27 @@ public:
     std::string DumpBitcoinPrivKey(const CWallet* pwallet, const std::string &strAddress);
     UniValue GetAddressPubkey(const CWallet *pwallet, const char *addr); // Used in HTLC creation
     CKeyID GetAddressKeyID(const char *addr);
+    UniValue GetAllAddress();
     SPVTxType IsMine(const char *address);
-    bool ValidateAddress(const char *address);
+    UniValue ValidateAddress(const char *address);
 
     // Bitcoin Transaction related calls
     int64_t GetBitcoinBalance();
+    uint64_t GetFeeRate();
     std::string GetRawTransactions(uint256& hash);
     UniValue ListTransactions();
     UniValue ListReceived(int nMinDepth, std::string address);
-    void RebuildBloomFilter();
+    void RebuildBloomFilter(bool rescan = false);
     virtual UniValue SendBitcoins(CWallet* const pwallet, std::string address, int64_t amount, uint64_t feeRate);
 
     // Bitcoin HTLC calls
     UniValue GetHTLCReceived(const std::string &addr);
     std::string GetHTLCSeed(uint8_t* md20);
     UniValue CreateHTLCTransaction(CWallet* const pwallet, const char *scriptAddress, const char *destinationAddress, const std::string& seed, uint64_t feerate, bool seller);
+
+    // Get and set DB version
+    int GetDBVersion();
+    int SetDBVersion();
 
 private:
     virtual void OnSendRawTx(BRTransaction * tx, std::promise<int> * promise);
@@ -234,7 +251,7 @@ protected:
 
     void WriteBlock(BRMerkleBlock const * block);
     void WriteTx(BRTransaction const * tx);
-    void UpdateTx(uint256 const & hash, uint32_t blockHeight, uint32_t timestamp);
+    void UpdateTx(uint256 const & hash, uint32_t blockHeight, uint32_t timestamp, const uint256 &blockHash);
     void EraseTx(uint256 const & hash);
 };
 

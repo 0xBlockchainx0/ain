@@ -8,7 +8,6 @@
 #include <core_io.h>
 #include <validation.h>
 
-#include <masternodes/criminals.h>
 #include <masternodes/masternodes.h>
 #include <masternodes/mn_checks.h>
 
@@ -35,7 +34,8 @@ typedef enum {
     SelectionPie,
 } AccountSelectionMode;
 
-// Special guarding object. Should be created before the first use of funding (straight or by GetAuthInputsSmart())
+// It helps to lock inputs preventing auto auth to select same one
+// it should be created before the first use of funding (straight or by GetAuthInputsSmart())
 struct LockedCoinsScopedGuard {
     CWallet* const pwallet;
     std::set<COutPoint> lockedCoinsBackup;
@@ -62,9 +62,10 @@ struct LockedCoinsScopedGuard {
 };
 
 // common functions
+bool IsSkippedTx(const uint256& hash);
 int chainHeight(interfaces::Chain::Lock& locked_chain);
 std::vector<CTxIn> GetInputs(UniValue const& inputs);
-CMutableTransaction fund(CMutableTransaction& mtx, CWallet* const pwallet, CTransactionRef optAuthTx, CCoinControl* coin_control = nullptr, bool lockUnspents = false);
+CMutableTransaction fund(CMutableTransaction& mtx, CWallet* const pwallet, CTransactionRef optAuthTx, CCoinControl* coin_control = nullptr);
 CTransactionRef sign(CMutableTransaction& mtx, CWallet* const pwallet, CTransactionRef optAuthTx);
 CTransactionRef send(CTransactionRef tx, CTransactionRef optAuthTx);
 CTransactionRef signsend(CMutableTransaction& mtx, CWallet* const pwallet, CTransactionRef optAuthTx /* = {}*/);
@@ -73,6 +74,8 @@ std::vector<CTxIn> GetAuthInputsSmart(CWallet* const pwallet, int32_t txVersion,
 std::string ScriptToString(CScript const& script);
 CAccounts GetAllMineAccounts(CWallet* const pwallet);
 CAccounts SelectAccountsByTargetBalances(const CAccounts& accounts, const CBalances& targetBalances, AccountSelectionMode selectionMode);
+void execTestTx(const CTransaction& tx, uint32_t height, const std::vector<unsigned char>& metadata, CCustomTxMessage txMessage, const CCoinsViewCache& coins = g_chainstate->CoinsTip());
 CScript CreateScriptForHTLC(const JSONRPCRequest& request, uint32_t &blocks, std::vector<unsigned char>& image);
+CPubKey PublickeyFromString(const std::string &pubkey);
 
 #endif // DEFI_MASTERNODES_MN_RPC_H

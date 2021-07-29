@@ -22,6 +22,7 @@
 #include <txmempool.h> // For CTxMemPool::cs
 #include <txdb.h>
 #include <versionbits.h>
+#include <pos.h>
 
 #include <algorithm>
 #include <atomic>
@@ -35,8 +36,8 @@
 #include <vector>
 
 class CAnchorConfirmMessage;
+struct CBalances;
 class CChainState;
-class CDoubleSignFact;
 class CCustomCSView;
 class CBlockIndex;
 class CBlockTreeDB;
@@ -113,9 +114,9 @@ static const int64_t BLOCK_DOWNLOAD_TIMEOUT_BASE = 1000000;
 /** Additional block download timeout per parallel downloading peer (i.e. 5 min) */
 static const int64_t BLOCK_DOWNLOAD_TIMEOUT_PER_PEER = 500000;
 
-static const int64_t DEFAULT_MAX_TIP_AGE = 24 * 60 * 60;
+static const int64_t DEFAULT_MAX_TIP_AGE = 80 * 60;
 /** Maximum age of our tip in seconds for us to be considered current for fee estimation */
-static const int64_t MAX_FEE_ESTIMATION_TIP_AGE = 3 * 60 * 60;
+static const int64_t MAX_FEE_ESTIMATION_TIP_AGE = 10 * 60;
 
 static const bool DEFAULT_CHECKPOINTS_ENABLED = true;
 static const bool DEFAULT_TXINDEX = false;
@@ -182,7 +183,6 @@ extern bool fPruneMode;
 extern uint64_t nPruneTarget;
 /** Flag to skip PoS-related checks (regtest only) */
 extern bool fIsFakeNet;
-extern bool fCriminals;
 
 namespace spv {
     class CSpvWrapper;
@@ -243,6 +243,8 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
  */
 bool ProcessNewBlockHeaders(const std::vector<CBlockHeader>& block, CValidationState& state, const CChainParams& chainparams, const CBlockIndex** ppindex = nullptr, CBlockHeader* first_invalid = nullptr) LOCKS_EXCLUDED(cs_main);
 
+/** Check if transaction is trying to spend a burnt output */
+bool CheckBurnSpend(const CTransaction &tx, const CCoinsViewCache &inputs);
 /** Open a block file (blk?????.dat) */
 FILE* OpenBlockFile(const FlatFilePos &pos, bool fReadOnly = false);
 /** Translation to a filesystem path */
@@ -388,7 +390,7 @@ bool UndoReadFromDisk(CBlockUndo& blockundo, const CBlockIndex* pindex);
 /** Functions for validating blocks and updating the block tree */
 
 /** Context-independent validity checks */
-bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOS, bool fCheckMerkleRoot = true);
+bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, CheckContextState& ctxState, bool fCheckPOS, bool fCheckMerkleRoot = true);
 
 /** Check a block is completely valid from start to finish (only works on top of our current best block) */
 bool TestBlockValidity(CValidationState& state, const CChainParams& chainparams, const CBlock& block, CBlockIndex* pindexPrev, bool fCheckMerkleRoot = true) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
@@ -599,6 +601,9 @@ private:
     //! Manages the UTXO set, which is a reflection of the contents of `m_chain`.
     std::unique_ptr<CoinsViews> m_coins_views;
 
+    //! Indicates disconneting is in process
+    std::atomic_bool m_disconnectTip{false};
+
 public:
     CChainState(BlockManager& blockman) : m_blockman(blockman) {}
     CChainState();
@@ -700,9 +705,9 @@ public:
     bool AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CValidationState& state, const CChainParams& chainparams, CBlockIndex** ppindex, bool fRequested, const FlatFilePos* dbp, bool* fNewBlock) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     // Block (dis)connection on a given view:
-    DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view, CCustomCSView& cache, std::vector<CAnchorConfirmMessage> & disconnectedAnchorConfirms, std::map<uint256, CDoubleSignFact> & disconnectedCriminals);
+    DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view, CCustomCSView& cache, std::vector<CAnchorConfirmMessage> & disconnectedAnchorConfirms);
     bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex,
-                      CCoinsViewCache& view, CCustomCSView& cache, const CChainParams& chainparams, std::vector<uint256> & rewardedAnchors, std::vector<uint256> & bannedCriminals, bool fJustCheck = false) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+                      CCoinsViewCache& view, CCustomCSView& cache, const CChainParams& chainparams, std::vector<uint256> & rewardedAnchors, bool fJustCheck = false) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     // Apply the effects of a block disconnection on the UTXO set.
     bool DisconnectTip(CValidationState& state, const CChainParams& chainparams, DisconnectedBlockTransactions* disconnectpool) EXCLUSIVE_LOCKS_REQUIRED(cs_main, ::mempool.cs);
@@ -722,6 +727,9 @@ public:
 
     /** Check whether we are doing an initial block download (synchronizing from disk or network) */
     bool IsInitialBlockDownload() const;
+
+    /** Check whether we are in disconnect process */
+    bool IsDisconnectingTip() const;
 
     /**
      * Make various assertions about the state of the block index.
@@ -813,5 +821,12 @@ inline bool IsBlockPruned(const CBlockIndex* pblockindex)
 
 Res ApplyGeneralCoinbaseTx(CCustomCSView & mnview, CTransaction const & tx, int height, CAmount nFees, const Consensus::Params& consensus);
 void ReverseGeneralCoinbaseTx(CCustomCSView & mnview, int height);
+
+inline CAmount CalculateCoinbaseReward(const CAmount blockReward, const uint32_t percentage)
+{
+    return (blockReward  * percentage) / 10000;
+}
+
+Res AddNonTxToBurnIndex(const CScript& from, const CBalances& amounts);
 
 #endif // DEFI_VALIDATION_H

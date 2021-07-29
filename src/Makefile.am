@@ -22,7 +22,7 @@ endif
 LIBDEFI_SPV=libdefi_spv.a
 SPV_INCLUDES=-I. -I./spv -I./spv/support -I./spv/bitcoin -I./spv/bcash
 
-DEFI_INCLUDES=-I$(builddir) $(BDB_CPPFLAGS) $(BOOST_CPPFLAGS) $(LEVELDB_CPPFLAGS) $(CRYPTO_CFLAGS) $(SSL_CFLAGS)
+DEFI_INCLUDES=-I$(builddir) $(BDB_CPPFLAGS) $(BOOST_CPPFLAGS) $(LEVELDB_CPPFLAGS)
 
 DEFI_INCLUDES += -I$(srcdir)/secp256k1/include
 DEFI_INCLUDES += $(UNIVALUE_CFLAGS)
@@ -145,7 +145,6 @@ DEFI_CORE_H = \
   init.h \
   interfaces/chain.h \
   interfaces/handler.h \
-  interfaces/node.h \
   key.h \
   key_io.h \
   dbwrapper.h \
@@ -156,21 +155,22 @@ DEFI_CORE_H = \
   masternodes/anchors.h \
   masternodes/balances.h \
   masternodes/communityaccounttypes.h \
-  masternodes/criminals.h \
   masternodes/factory.h \
+  masternodes/govvariables/icx_takerfee_per_btc.h \
   masternodes/govvariables/lp_daily_dfi_reward.h \
   masternodes/govvariables/lp_splits.h \
   masternodes/gv.h \
+  masternodes/icxorder.h \
   masternodes/incentivefunding.h \
   masternodes/masternodes.h \
   masternodes/mn_checks.h \
   masternodes/mn_rpc.h \
   masternodes/res.h \
-  masternodes/rewardhistoryold.h \
   masternodes/tokens.h \
   masternodes/poolpairs.h \
   masternodes/undo.h \
   masternodes/undos.h \
+  masternodes/oracles.h \
   memusage.h \
   merkleblock.h \
   miner.h \
@@ -360,26 +360,31 @@ libdefi_server_a_SOURCES = \
   index/blockfilterindex.cpp \
   index/txindex.cpp \
   interfaces/chain.cpp \
-  interfaces/node.cpp \
   init.cpp \
   dbwrapper.cpp \
   masternodes/accounts.cpp \
   masternodes/accountshistory.cpp \
   masternodes/anchors.cpp \
-  masternodes/criminals.cpp \
+  masternodes/oracles.cpp \
+  masternodes/govvariables/icx_takerfee_per_btc.cpp \
   masternodes/govvariables/lp_daily_dfi_reward.cpp \
   masternodes/govvariables/lp_splits.cpp \
   masternodes/gv.cpp \
+  masternodes/icxorder.cpp \
   masternodes/incentivefunding.cpp \
   masternodes/masternodes.cpp \
   masternodes/mn_checks.cpp \
   masternodes/mn_rpc.cpp \
-  masternodes/rpc_masternodes.cpp \
   masternodes/rpc_accounts.cpp \
-  masternodes/rpc_tokens.cpp \
+  masternodes/rpc_customtx.cpp \
+  masternodes/rpc_masternodes.cpp \
+  masternodes/rpc_icxorderbook.cpp \
+  masternodes/rpc_oracles.cpp \
   masternodes/rpc_poolpair.cpp \
+  masternodes/rpc_tokens.cpp \
   masternodes/tokens.cpp \
   masternodes/poolpairs.cpp \
+  masternodes/skipped_txs.cpp \
   masternodes/undos.cpp \
   miner.cpp \
   net.cpp \
@@ -663,7 +668,7 @@ defid_LDADD = \
   $(LIBMEMENV) \
   $(LIBSECP256K1)
 
-defid_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS)
+defid_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS)
 
 # defi-cli binary #
 defi_cli_SOURCES = defi-cli.cpp
@@ -681,7 +686,7 @@ defi_cli_LDADD = \
   $(LIBDEFI_UTIL) \
   $(LIBDEFI_CRYPTO)
 
-defi_cli_LDADD += $(BOOST_LIBS) $(CRYPTO_LIBS) $(EVENT_LIBS)
+defi_cli_LDADD += $(BOOST_LIBS) $(EVENT_LIBS)
 #
 
 # defi-tx binary #
@@ -702,7 +707,7 @@ defi_tx_LDADD = \
   $(LIBDEFI_CRYPTO) \
   $(LIBSECP256K1)
 
-defi_tx_LDADD += $(BOOST_LIBS) $(CRYPTO_LIBS)
+defi_tx_LDADD += $(BOOST_LIBS)
 #
 
 # defi-wallet binary #
@@ -730,7 +735,7 @@ defi_wallet_LDADD = \
   $(LIBSECP256K1) \
   $(LIBUNIVALUE)
 
-defi_wallet_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(CRYPTO_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(MINIUPNPC_LIBS) $(ZMQ_LIBS)
+defi_wallet_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(MINIUPNPC_LIBS) $(ZMQ_LIBS)
 #
 
 # deficonsensus library #
@@ -804,12 +809,6 @@ check-security: $(bin_PROGRAMS)
 if HARDEN
 	@echo "Checking binary security..."
 	$(AM_V_at) READELF=$(READELF) OBJDUMP=$(OBJDUMP) $(PYTHON) $(top_srcdir)/contrib/devtools/security-check.py < $(bin_PROGRAMS)
-endif
-
-if ENABLE_BIP70
-%.pb.cc %.pb.h: %.proto
-	@test -f $(PROTOC)
-	$(AM_V_GEN) $(PROTOC) --cpp_out=$(@D) --proto_path=$(<D) $<
 endif
 
 if EMBEDDED_LEVELDB

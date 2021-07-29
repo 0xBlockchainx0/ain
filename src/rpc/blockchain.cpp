@@ -151,6 +151,41 @@ UniValue blockToJSON(const CBlock& block, const CBlockIndex* tip, const CBlockIn
     result.pushKV("version", block.nVersion);
     result.pushKV("versionHex", strprintf("%08x", block.nVersion));
     result.pushKV("merkleroot", block.hashMerkleRoot.GetHex());
+    UniValue rewards(UniValue::VARR);
+    if (blockindex->nHeight >= Params().GetConsensus().AMKHeight)
+    {
+        CAmount blockReward = GetBlockSubsidy(blockindex->nHeight, Params().GetConsensus());
+        UniValue nonutxo(UniValue::VOBJ);
+
+        if (blockindex->nHeight >= Params().GetConsensus().EunosHeight)
+        {
+            CAmount burnt{0};
+            for (const auto& kv : Params().GetConsensus().newNonUTXOSubsidies)
+            {
+                CAmount subsidy = CalculateCoinbaseReward(blockReward, kv.second);
+
+                if (kv.first == CommunityAccountType::AnchorReward) {
+                    nonutxo.pushKV(GetCommunityAccountName(kv.first), ValueFromAmount(subsidy));
+                } else {
+                    burnt += subsidy; // Everything else goes into burnt
+                }
+            }
+
+            // Add burnt total
+            nonutxo.pushKV(GetCommunityAccountName(CommunityAccountType::Unallocated), ValueFromAmount(burnt));
+        }
+        else
+        {
+            for (const auto& kv : Params().GetConsensus().nonUtxoBlockSubsidies)
+            {
+                // Anchor and LP incentive
+                nonutxo.pushKV(GetCommunityAccountName(kv.first), ValueFromAmount(blockReward * kv.second / COIN));
+            }
+        }
+
+        rewards.push_back(nonutxo);
+    }
+    result.pushKV("nonutxo", rewards);
     UniValue txs(UniValue::VARR);
     for(const auto& tx : block.vtx)
     {
@@ -886,6 +921,9 @@ static UniValue getblock(const JSONRPCRequest& request)
             "  \"version\" : n,         (numeric) The block version\n"
             "  \"versionHex\" : \"00000000\", (string) The block version formatted in hexadecimal\n"
             "  \"merkleroot\" : \"xxxx\", (string) The merkle root\n"
+            "  \"nonutxo\" : [,         (array of string) Non-UTXO coinbase rewards\n"
+            "     \"type\" n.nnnnnnnn   (numeric) Reward type and amount\n"
+            "  ],\n"
             "  \"tx\" : [               (array of string) The transaction ids\n"
             "     \"transactionid\"     (string) The transaction id\n"
             "     ,...\n"
@@ -1314,16 +1352,12 @@ UniValue getblockchaininfo(const JSONRPCRequest& request)
 
     const Consensus::Params& consensusParams = Params().GetConsensus();
     UniValue softforks(UniValue::VOBJ);
-    BuriedForkDescPushBack(softforks, "bip34", consensusParams.BIP34Height);
-    BuriedForkDescPushBack(softforks, "bip66", consensusParams.BIP66Height);
-    BuriedForkDescPushBack(softforks, "bip65", consensusParams.BIP65Height);
-    BuriedForkDescPushBack(softforks, "csv", consensusParams.CSVHeight);
-    BuriedForkDescPushBack(softforks, "segwit", consensusParams.SegwitHeight);
     BuriedForkDescPushBack(softforks, "amk", consensusParams.AMKHeight);
     BuriedForkDescPushBack(softforks, "bayfront", consensusParams.BayfrontHeight);
     BuriedForkDescPushBack(softforks, "clarkequay", consensusParams.ClarkeQuayHeight);
     BuriedForkDescPushBack(softforks, "dakota", consensusParams.DakotaHeight);
     BuriedForkDescPushBack(softforks, "dakotacrescent", consensusParams.DakotaCrescentHeight);
+    BuriedForkDescPushBack(softforks, "eunos", consensusParams.EunosHeight);
     BIP9SoftForkDescPushBack(softforks, "testdummy", consensusParams, Consensus::DEPLOYMENT_TESTDUMMY);
     obj.pushKV("softforks",             softforks);
 

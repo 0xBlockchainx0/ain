@@ -26,7 +26,8 @@
 
 #include <string.h>
 #include <inttypes.h>
-//#include <errno.h>
+
+#include <boost/algorithm/string/replace.hpp>
 
 extern RecursiveMutex cs_main;
 
@@ -58,6 +59,7 @@ std::unique_ptr<CSpvWrapper> pspv;
 // Prefixes to the masternodes database (masternodes/)
 static const char DB_SPVBLOCKS = 'B';     // spv "blocks" table
 static const char DB_SPVTXS    = 'T';     // spv "tx2msg" table
+static const char DB_VERSION   = 'V';
 
 uint64_t const DEFAULT_BTC_FEERATE = TX_FEE_PER_KB;
 uint64_t const DEFAULT_BTC_FEE_PER_KB = DEFAULT_FEE_PER_KB;
@@ -77,11 +79,11 @@ void txAdded(void *info, BRTransaction *tx)
     static_cast<CSpvWrapper *>(info)->OnTxAdded(tx);
 }
 
-void txUpdated(void *info, const UInt256 txHashes[], size_t txCount, uint32_t blockHeight, uint32_t timestamp)
+void txUpdated(void *info, const UInt256 txHashes[], size_t txCount, uint32_t blockHeight, uint32_t timestamp, const UInt256& blockHash)
 {
     /// @attention called under spv manager lock!!!
     if (ShutdownRequested()) return;
-    static_cast<CSpvWrapper *>(info)->OnTxUpdated(txHashes, txCount, blockHeight, timestamp);
+    static_cast<CSpvWrapper *>(info)->OnTxUpdated(txHashes, txCount, blockHeight, timestamp, blockHash);
 }
 
 void txDeleted(void *info, UInt256 txHash, int notifyUser, int recommendRescan)
@@ -119,6 +121,12 @@ void saveBlocks(void *info, int replace, BRMerkleBlock *blocks[], size_t blocksC
 //    if (ShutdownRequested()) return;
     static_cast<CSpvWrapper *>(info)->OnSaveBlocks(replace, blocks, blocksCount);
 }
+
+void blockNotify(void *info, const UInt256& blockHash)
+{
+    static_cast<CSpvWrapper *>(info)->OnBlockNotify(blockHash);
+}
+
 void savePeers(void *info, int replace, const BRPeer peers[], size_t peersCount)
 {
     LOCK(cs_spvcallback);
@@ -203,7 +211,10 @@ CSpvWrapper::CSpvWrapper(bool isMainnet, size_t nCacheSize, bool fMemory, bool f
     LogPrint(BCLog::SPV, "internal logs set to %s\n", spv_logfilename);
     spv_log2console = 0;
     spv_mainnet = isMainnet ? 1 : 0;
+}
 
+void CSpvWrapper::Load()
+{
     BRMasterPubKey mpk = BR_MASTER_PUBKEY_NONE;
     mpk = BRBIP32ParseMasterPubKey(Params().GetConsensus().spv.wallet_xpub.c_str());
 
@@ -234,8 +245,8 @@ CSpvWrapper::CSpvWrapper(bool isMainnet, size_t nCacheSize, bool fMemory, bool f
     auto userAddresses = new BRUserAddresses;
     auto htlcAddresses = new BRUserAddresses;
     const auto wallets = GetWallets();
-    for (const auto& wallet : wallets) {
-        for (const auto& entry : wallet->mapAddressBook)
+    for (const auto& item : wallets) {
+        for (const auto& entry : item->mapAddressBook)
         {
             if (entry.second.purpose == "spv")
             {
@@ -283,7 +294,7 @@ CSpvWrapper::CSpvWrapper(bool isMainnet, size_t nCacheSize, bool fMemory, bool f
 
     // can't wrap member function as static "C" function here:
     BRPeerManagerSetCallbacks(manager, this, syncStarted, syncStopped, txStatusUpdate,
-                              saveBlocks, savePeers, nullptr /*networkIsReachable*/, threadCleanup);
+                              saveBlocks, blockNotify, savePeers, nullptr /*networkIsReachable*/, threadCleanup);
 
 }
 
@@ -407,34 +418,42 @@ void CSpvWrapper::OnTxAdded(BRTransaction * tx)
             LogPrint(BCLog::SPV, "adding anchor to pending %s\n", txHash.ToString());
         }
     }
+
+    OnTxNotify(tx->txHash);
 }
 
-void CSpvWrapper::OnTxUpdated(const UInt256 txHashes[], size_t txCount, uint32_t blockHeight, uint32_t timestamp)
+void CSpvWrapper::OnTxUpdated(const UInt256 txHashes[], size_t txCount, uint32_t blockHeight, uint32_t timestamp, const UInt256& blockHash)
 {
     /// @attention called under spv manager lock!!!
     for (size_t i = 0; i < txCount; ++i) {
         uint256 const txHash{to_uint256(txHashes[i])};
-        UpdateTx(txHash, blockHeight, timestamp);
-        LogPrint(BCLog::SPV, "tx updated, hash: %s, blockHeight: %d, timestamp: %d\n", txHash.ToString(), blockHeight, timestamp);
+        const uint256 btcHash{to_uint256(blockHash)};
 
-        LOCK(cs_main);
-
-        CAnchorIndex::AnchorRec oldPending;
-        if (panchors->GetPendingByBtcTx(txHash, oldPending))
         {
-            LogPrint(BCLog::SPV, "updating anchor pending %s\n", txHash.ToString());
-            if (panchors->AddToAnchorPending(oldPending.anchor, txHash, blockHeight, true)) {
-                LogPrint(BCLog::ANCHORING, "Anchor pending added/updated %s\n", txHash.ToString());
+            LOCK(cs_main);
+
+            UpdateTx(txHash, blockHeight, timestamp, btcHash);
+            LogPrint(BCLog::SPV, "tx updated, hash: %s, blockHeight: %d, timestamp: %d\n", txHash.ToString(), blockHeight, timestamp);
+
+            CAnchorIndex::AnchorRec oldPending;
+            if (panchors->GetPendingByBtcTx(txHash, oldPending))
+            {
+                LogPrint(BCLog::SPV, "updating anchor pending %s\n", txHash.ToString());
+                if (panchors->AddToAnchorPending(oldPending.anchor, txHash, blockHeight, true)) {
+                    LogPrint(BCLog::ANCHORING, "Anchor pending added/updated %s\n", txHash.ToString());
+                }
+            }
+            else if (auto exist = panchors->GetAnchorByBtcTx(txHash)) // update index. no any checks nor validations
+            {
+                LogPrint(BCLog::SPV, "updating anchor %s\n", txHash.ToString());
+                CAnchor oldAnchor{exist->anchor};
+                if (panchors->AddAnchor(oldAnchor, txHash, blockHeight, true)) {
+                    LogPrint(BCLog::ANCHORING, "Anchor added/updated %s\n", txHash.ToString());
+                }
             }
         }
-        else if (auto exist = panchors->GetAnchorByBtcTx(txHash)) // update index. no any checks nor validations
-        {
-            LogPrint(BCLog::SPV, "updating anchor %s\n", txHash.ToString());
-            CAnchor oldAnchor{exist->anchor};
-            if (panchors->AddAnchor(oldAnchor, txHash, blockHeight, true)) {
-                LogPrint(BCLog::ANCHORING, "Anchor added/updated %s\n", txHash.ToString());
-            }
-        }
+
+        OnTxNotify(txHashes[i]);
     }
 }
 
@@ -444,9 +463,13 @@ void CSpvWrapper::OnTxDeleted(UInt256 txHash, int notifyUser, int recommendResca
     uint256 const hash(to_uint256(txHash));
     EraseTx(hash);
 
-    LOCK(cs_main);
-    panchors->DeleteAnchorByBtcTx(hash);
-    panchors->DeletePendingByBtcTx(hash);
+    {
+        LOCK(cs_main);
+        panchors->DeleteAnchorByBtcTx(hash);
+        panchors->DeletePendingByBtcTx(hash);
+    }
+
+    OnTxNotify(txHash);
 
     LogPrint(BCLog::SPV, "tx deleted: %s; notifyUser: %d, recommendRescan: %d\n", hash.ToString(), notifyUser, recommendRescan);
 }
@@ -485,6 +508,39 @@ void CSpvWrapper::OnSaveBlocks(int replace, BRMerkleBlock * blocks[], size_t blo
     /// @attention don't call ANYTHING that could call back to spv here! cause OnSaveBlocks works under spv lock!!!
 }
 
+void CSpvWrapper::OnBlockNotify(const UInt256& blockHash)
+{
+#if HAVE_SYSTEM
+    if (initialSync)
+    {
+        return;
+    }
+
+    std::string strCmd = gArgs.GetArg("-spvblocknotify", "");
+    if (!strCmd.empty())
+    {
+        boost::replace_all(strCmd, "%s", to_uint256(blockHash).GetHex());
+        std::thread t(runCommand, strCmd);
+        t.detach(); // thread runs free
+    }
+#endif
+}
+
+void CSpvWrapper::OnTxNotify(const UInt256& txHash)
+{
+#if HAVE_SYSTEM
+    // notify an external script when a wallet transaction comes in or is updated
+    std::string strCmd = gArgs.GetArg("-spvwalletnotify", "");
+
+    if (!strCmd.empty())
+    {
+        boost::replace_all(strCmd, "%s", to_uint256(txHash).GetHex());
+        std::thread t(runCommand, strCmd);
+        t.detach(); // thread runs free
+    }
+#endif
+}
+
 void CSpvWrapper::OnSavePeers(int replace, const BRPeer peers[], size_t peersCount)
 {
     // this is useless :(
@@ -511,7 +567,7 @@ void CSpvWrapper::WriteTx(const BRTransaction *tx)
     db->Write(std::make_pair(DB_SPVTXS, to_uint256(tx->txHash)), std::make_pair(buf, std::make_pair(tx->blockHeight, tx->timestamp)) );
 }
 
-void CSpvWrapper::UpdateTx(uint256 const & hash, uint32_t blockHeight, uint32_t timestamp)
+void CSpvWrapper::UpdateTx(uint256 const & hash, uint32_t blockHeight, uint32_t timestamp, const uint256& blockHash)
 {
     std::pair<char, uint256> const key{std::make_pair(DB_SPVTXS, hash)};
     db_tx_rec txrec;
@@ -520,6 +576,9 @@ void CSpvWrapper::UpdateTx(uint256 const & hash, uint32_t blockHeight, uint32_t 
         txrec.second.second = timestamp;
         db->Write(key, txrec);
     }
+
+    // Store block index in anchors
+    panchors->WriteBlock(blockHeight, blockHash);
 }
 
 uint32_t CSpvWrapper::ReadTxTimestamp(uint256 const & hash)
@@ -560,6 +619,26 @@ void CSpvWrapper::WriteBlock(const BRMerkleBlock * block)
     BatchWrite(std::make_pair(DB_SPVBLOCKS, to_uint256(block->blockHash)), std::make_pair(buf, block->height));
 }
 
+UniValue CSpvWrapper::GetPeers()
+{
+    auto peerInfo = BRGetPeers(manager);
+
+    UniValue result(UniValue::VOBJ);
+
+    for (const auto& peer : peerInfo)
+    {
+        UniValue obj(UniValue::VOBJ);
+        for (const auto& json : peer.second)
+        {
+            obj.pushKV(json.first, json.second);
+        }
+
+        result.pushKV(std::to_string(peer.first), obj);
+    }
+
+    return result;
+}
+
 std::string CSpvWrapper::AddBitcoinAddress(const CPubKey& new_key)
 {
     BRAddress addr = BR_ADDRESS_NONE;
@@ -577,9 +656,9 @@ void CSpvWrapper::AddBitcoinHash(const uint160 &userHash, const bool htlc)
     BRWalletImportAddress(wallet, userHash, htlc);
 }
 
-void CSpvWrapper::RebuildBloomFilter()
+void CSpvWrapper::RebuildBloomFilter(bool rescan)
 {
-    BRPeerManagerRebuildBloomFilter(manager);
+    BRPeerManagerRebuildBloomFilter(manager, rescan);
 }
 
 std::string CSpvWrapper::DumpBitcoinPrivKey(const CWallet* pwallet, const std::string &strAddress)
@@ -637,10 +716,11 @@ UniValue CSpvWrapper::SendBitcoins(CWallet* const pwallet, std::string address, 
     auto dest = GetDestinationForKey(new_key, OutputType::BECH32);
     pwallet->SetAddressBook(dest, "spv", "spv");
 
-    BRTransaction *tx = BRWalletCreateTransaction(wallet, static_cast<uint64_t>(amount), address.c_str(), changeAddress, feeRate);
+    std::string errorMsg;
+    BRTransaction *tx = BRWalletCreateTransaction(wallet, static_cast<uint64_t>(amount), address.c_str(), changeAddress, feeRate, errorMsg);
 
     if (tx == nullptr) {
-        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, errorMsg);
     }
 
     std::vector<BRKey> inputKeys;
@@ -1040,9 +1120,28 @@ SPVTxType CSpvWrapper::IsMine(const char *address)
     return BRWalletIsMine(wallet, addressFilter, true);
 }
 
-bool CSpvWrapper::ValidateAddress(const char *address)
+UniValue CSpvWrapper::ValidateAddress(const char *address)
 {
-    return BRAddressIsValid(address);
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("isvalid", BRAddressIsValid(address) == 1);
+    ret.pushKV("ismine", IsMine(address) != SPVTxType::None);
+    return ret;
+}
+
+UniValue CSpvWrapper::GetAllAddress()
+{
+    const auto addresses = BRWalletAllUserAddrs(wallet);
+    UniValue ret(UniValue::VARR);
+    for (const auto& address : addresses)
+    {
+        ret.push_back(address);
+    }
+    return ret;
+}
+
+uint64_t CSpvWrapper::GetFeeRate()
+{
+    return BRWalletFeePerKb(wallet);
 }
 
 void publishedTxCallback(void *info, int error)
@@ -1166,6 +1265,7 @@ UniValue CSpvWrapper::CreateHTLCTransaction(CWallet* const pwallet, const char* 
 
     // Calculate and set fee
     int64_t sigSize = 73 /* sig */ + 1 /* sighash */ + seedBytes.size() + 1 /* OP_1 || size */ + 1 /* pushdata */ + script.size();
+    feerate = std::max(feerate, BRWalletFeePerKb(wallet));
     CAmount const minFee = BRTransactionHTLCSize(tx, sigSize) * feerate / TX_FEE_PER_KB;
 
     if (inputTotal < minFee + static_cast<CAmount>(P2PKH_DUST))
@@ -1204,6 +1304,17 @@ UniValue CSpvWrapper::CreateHTLCTransaction(CWallet* const pwallet, const char* 
     result.pushKV("txid", txid);
     result.pushKV("sendmessage", DecodeSendResult(sendResult));
     return result;
+}
+
+int CSpvWrapper::GetDBVersion() {
+    int version{0};
+    db->Read(DB_VERSION, version);
+    return version;
+}
+
+int CSpvWrapper::SetDBVersion() {
+    db->Write(DB_VERSION, SPV_DB_VERSION);
+    return GetDBVersion();
 }
 
 /*
@@ -1423,7 +1534,9 @@ void CFakeSpvWrapper::OnSendRawTx(BRTransaction *tx, std::promise<int> * promise
 
     // Use realistic time
     tx->timestamp = GetTime();
-    OnTxUpdated(&tx->txHash, 1, lastBlockHeight, GetTime() + 1000);
+
+    // UInt256 cannot be null or anchor will remain in pending assumed unconfirmed
+    OnTxUpdated(&tx->txHash, 1, lastBlockHeight, GetTime() + 1000, UInt256{ .u64 = { 1, 1, 1, 1 } });
 
     if (promise) {
         promise->set_value(0);

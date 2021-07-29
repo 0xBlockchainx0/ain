@@ -193,6 +193,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "minttokens", 1, "inputs"},
     { "utxostoaccount", 0, "amounts" },
     { "utxostoaccount", 1, "inputs" },
+    { "sendutxosfrom", 2, "amount" },
     { "addpoolliquidity", 0, "from" },
     { "addpoolliquidity", 2, "inputs" },
     { "removepoolliquidity", 2, "inputs" },
@@ -214,6 +215,21 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "accounttoaccount", 2, "inputs" },
     { "accounttoutxos", 1, "to" },
     { "accounttoutxos", 2, "inputs" },
+
+    { "icx_createorder", 0, "order" },
+    { "icx_createorder", 1, "inputs" },
+    { "icx_makeoffer", 0, "offer" },
+    { "icx_makeoffer", 1, "inputs" },
+    { "icx_submitdfchtlc", 0, "dfchtlc" },
+    { "icx_submitdfchtlc", 1, "inputs" },
+    { "icx_submitexthtlc", 0, "exthtlc" },
+    { "icx_submitexthtlc", 1, "inputs" },
+    { "icx_claimdfchtlc", 0, "claim" },
+    { "icx_claimdfchtlc", 1, "inputs" },
+    { "icx_closeorder", 1, "inputs" },
+    { "icx_closeoffer", 1, "inputs" },
+    { "icx_listorders", 0, "by" },
+    { "icx_listhtlcs", 0, "by" },
 
     { "spv_sendrawtx", 0, "rawtx" },
     { "spv_createanchor", 0, "inputs" },
@@ -243,6 +259,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "listpoolshares", 2, "is_mine_only" },
 
     { "listaccounthistory", 1, "options" },
+    { "listburnhistory", 0, "options" },
     { "accounthistorycount", 1, "options" },
 
     { "setgov", 0, "variables" },
@@ -253,10 +270,27 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "sendtokenstoaddress", 1, "to" },
     { "getanchorteams", 0, "blockHeight" },
     { "getactivemasternodecount", 0, "blockCount" },
+    { "appointoracle", 1, "pricefeeds" },
+    { "appointoracle", 2, "weightage" },
+    { "appointoracle", 3, "inputs" },
+    { "updateoracle", 2, "pricefeeds" },
+    { "updateoracle", 3, "weightage" },
+    { "updateoracle", 4, "inputs" },
+    { "removeoracle", 1, "inputs" },
+    { "setoracledata", 1, "timestamp" },
+    { "setoracledata", 2, "prices" },
+    { "setoracledata", 3, "inputs" },
+    { "listoracles", 0, "pagination" },
+    { "listlatestrawprices", 0, "request" },
+    { "listlatestrawprices", 1, "pagination" },
+    { "listprices", 0, "pagination" },
+    { "getprice", 0, "request" },
 
     { "spv_claimhtlc", 3, "feerate" },
-
     { "spv_refundhtlc", 2, "feerate" },
+    { "decodecustomtx", 1, "iswitness" },
+
+    { "setmockcheckpoint", 0, "height" },
 };
 // clang-format on
 

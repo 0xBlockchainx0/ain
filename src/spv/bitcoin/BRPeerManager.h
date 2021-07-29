@@ -33,10 +33,6 @@
 #include <stddef.h>
 #include <inttypes.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #define PEER_MAX_CONNECTIONS 3
 
 typedef struct BRPeerManagerStruct BRPeerManager;
@@ -51,6 +47,7 @@ BRPeerManager *BRPeerManagerNew(const BRChainParams *params, BRWallet *wallet, u
 // void syncStopped(void *, int) - called when blockchain syncing stops, error is an errno.h code
 // void txStatusUpdate(void *) - called when transaction status may have changed such as when a new block arrives
 // void saveBlocks(void *, int, BRMerkleBlock *[], size_t) - called when blocks should be saved to the persistent store
+// void blockNotify(void *info, const UInt256& blockHash) - Called when chain tip changes
 // - if replace is true, remove any previously saved blocks first
 // void savePeers(void *, int, const BRPeer[], size_t) - called when peers should be saved to the persistent store
 // - if replace is true, remove any previously saved peers first
@@ -61,6 +58,7 @@ void BRPeerManagerSetCallbacks(BRPeerManager *manager, void *info,
                                void (*syncStopped)(void *info, int error),
                                void (*txStatusUpdate)(void *info),
                                void (*saveBlocks)(void *info, int replace, BRMerkleBlock *blocks[], size_t blocksCount),
+                               void (*blockNotify)(void *info, const UInt256& blockHash),
                                void (*savePeers)(void *info, int replace, const BRPeer peers[], size_t peersCount),
                                int (*networkIsReachable)(void *info),
                                void (*threadCleanup)(void *info));
@@ -71,6 +69,9 @@ void BRPeerManagerSetFixedPeer(BRPeerManager *manager, UInt128 address, uint16_t
 
 // current connect status
 BRPeerStatus BRPeerManagerConnectStatus(BRPeerManager *manager);
+
+// Get connected peer info
+std::map<int, std::vector<std::pair<std::string, std::string>>> BRGetPeers(BRPeerManager *manager);
 
 // connect to bitcoin peer-to-peer network (also call this whenever networkIsReachable() status changes)
 void BRPeerManagerConnect(BRPeerManager *manager);
@@ -125,10 +126,6 @@ void BRPeerManagerFree(BRPeerManager *manager);
 void BRPeerManagerCancelPendingTxs(BRPeerManager *manager);
 
 // Rebuild and resend the bloom filter
-void BRPeerManagerRebuildBloomFilter(BRPeerManager *manager);
-
-#ifdef __cplusplus
-}
-#endif
+void BRPeerManagerRebuildBloomFilter(BRPeerManager *manager, bool rescan = false);
 
 #endif // BRPeerManager_h

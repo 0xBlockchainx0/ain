@@ -23,6 +23,7 @@
 static constexpr int64_t MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60;
 
 static constexpr int64_t MAX_FUTURE_BLOCK_TIME_DAKOTACRESCENT = 5 * 60;
+static constexpr int64_t MAX_FUTURE_BLOCK_TIME_EUNOSPAYA = 30;
 
 /**
  * Timestamp window used as a grace period by code that compares external
@@ -190,6 +191,9 @@ public:
     uint256 stakeModifier; // hash modifier for proof-of-stake
     std::vector<unsigned char> sig;
 
+    // memory only
+    mutable CKeyID minterKeyID;
+
     //! (memory only) Sequential id assigned to distinguish order in which blocks are received.
     int32_t nSequenceId;
 
@@ -220,6 +224,7 @@ public:
         height         = 0;
         mintedBlocks   = 0;
         sig            = {};
+        minterKeyID    = {};
     }
 
     CBlockIndex()
@@ -239,6 +244,7 @@ public:
         mintedBlocks   = block.mintedBlocks;
         stakeModifier  = block.stakeModifier;
         sig            = block.sig;
+        block.ExtractMinterKey(minterKeyID);
     }
 
     FlatFilePos GetBlockPos() const {
@@ -275,12 +281,13 @@ public:
         return block;
     }
 
-    CKeyID minterKey() const
+    const CKeyID& minterKey() const
     {
-        CKeyID key;
-        if (!GetBlockHeader().ExtractMinterKey(key) && pprev)
-            throw std::runtime_error("Wrong minter public key, data is corrupt");
-        return key;
+        if (minterKeyID.IsNull()) {
+            if (!GetBlockHeader().ExtractMinterKey(minterKeyID) && pprev)
+                throw std::runtime_error("Wrong minter public key, data is corrupt");
+        }
+        return minterKeyID;
     }
 
     const uint256& GetBlockHash() const

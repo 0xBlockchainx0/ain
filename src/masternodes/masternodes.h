@@ -10,13 +10,14 @@
 #include <pubkey.h>
 #include <serialize.h>
 #include <masternodes/accounts.h>
-#include <masternodes/accountshistory.h>
 #include <masternodes/anchors.h>
+#include <masternodes/icxorder.h>
 #include <masternodes/incentivefunding.h>
+#include <masternodes/gv.h>
+#include <masternodes/oracles.h>
+#include <masternodes/poolpairs.h>
 #include <masternodes/tokens.h>
 #include <masternodes/undos.h>
-#include <masternodes/poolpairs.h>
-#include <masternodes/gv.h>
 #include <uint256.h>
 #include <wallet/ismine.h>
 
@@ -32,9 +33,8 @@ class CBlockIndex;
 class CTransaction;
 
 // Works instead of constants cause 'regtest' differs (don't want to overcharge chainparams)
-int GetMnActivationDelay();
-int GetMnResignDelay();
-int GetMnHistoryFrame();
+int GetMnActivationDelay(int height);
+int GetMnResignDelay(int height);
 CAmount GetTokenCollateralAmount();
 CAmount GetMnCreationFee(int height);
 CAmount GetTokenCreationFee(int height);
@@ -94,6 +94,7 @@ struct RemoveForcedRewardAddressMessage {
     }
 };
 
+constexpr uint8_t SUBNODE_COUNT{4};
 
 class CMasternode
 {
@@ -103,9 +104,13 @@ public:
         ENABLED,
         PRE_RESIGNED,
         RESIGNED,
-        PRE_BANNED,
-        BANNED,
         UNKNOWN // unreachable
+    };
+
+    enum TimeLock {
+        ZEROYEAR,
+        FIVEYEAR = 260,
+        TENYEAR = 520
     };
 
     //! Minted blocks counter
@@ -127,8 +132,8 @@ public:
     int32_t creationHeight;
     //! Resign height
     int32_t resignHeight;
-    //! Criminal ban height
-    int32_t banHeight;
+    //! Was used to set a ban height but is now unused
+    int32_t unusedVariable;
 
     //! This fields are for transaction rollback (by disconnecting block)
     uint256 resignTx;
@@ -138,9 +143,9 @@ public:
     CMasternode();
 
     State GetState() const;
-    State GetState(int h) const;
+    State GetState(int height) const;
     bool IsActive() const;
-    bool IsActive(int h) const;
+    bool IsActive(int height) const;
 
     static std::string GetHumanReadableState(State state);
 
@@ -159,7 +164,7 @@ public:
 
         READWRITE(creationHeight);
         READWRITE(resignHeight);
-        READWRITE(banHeight);
+        READWRITE(unusedVariable);
 
         READWRITE(resignTx);
         READWRITE(banTx);
@@ -192,8 +197,33 @@ struct MNBlockTimeKey
     }
 };
 
+struct SubNodeBlockTimeKey
+{
+    uint256 masternodeID;
+    uint8_t subnode;
+    uint32_t blockHeight;
+
+    ADD_SERIALIZE_METHODS;
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action) {
+        READWRITE(masternodeID);
+        READWRITE(subnode);
+
+        if (ser_action.ForRead()) {
+            READWRITE(WrapBigEndian(blockHeight));
+            blockHeight = ~blockHeight;
+        } else {
+            uint32_t blockHeight_ = ~blockHeight;
+            READWRITE(WrapBigEndian(blockHeight_));
+        }
+    }
+};
+
 class CMasternodesView : public virtual CStorageView
 {
+    std::map<CKeyID, std::pair<uint32_t, int64_t>> minterTimeCache;
+
 public:
 //    CMasternodesView() = default;
 
@@ -205,27 +235,35 @@ public:
     void IncrementMintedBy(CKeyID const & minter);
     void DecrementMintedBy(CKeyID const & minter);
 
-    bool BanCriminal(const uint256 txid, std::vector<unsigned char> & metadata, int height);
-    bool UnbanCriminal(const uint256 txid, std::vector<unsigned char> & metadata);
-
     boost::optional<std::pair<CKeyID, uint256>> AmIOperator() const;
     boost::optional<std::pair<CKeyID, uint256>> AmIOwner() const;
 
     // Multiple operator support
     std::set<std::pair<CKeyID, uint256>> GetOperatorsMulti() const;
 
-    Res CreateMasternode(uint256 const & nodeId, CMasternode const & node);
+    Res CreateMasternode(uint256 const & nodeId, CMasternode const & node, uint16_t timelock);
     Res ResignMasternode(uint256 const & nodeId, uint256 const & txid, int height);
-//    void UnCreateMasternode(uint256 const & nodeId);
-//    void UnResignMasternode(uint256 const & nodeId, uint256 const & resignTx);
     Res SetForcedRewardAddress(uint256 const & nodeId, const char rewardAddressType, CKeyID const & rewardAddress, int height);
     Res RemoveForcedRewardAddress(uint256 const & nodeId, int height);
+    Res UnCreateMasternode(uint256 const & nodeId);
+    Res UnResignMasternode(uint256 const & nodeId, uint256 const & resignTx);
 
+    // Get blocktimes for non-subnode and subnode with fork logic
+    std::vector<int64_t> GetBlockTimes(const CKeyID& keyID, const uint32_t blockHeight, const int32_t creationHeight, const uint16_t timelock);
+
+    // Non-subnode block times
     void SetMasternodeLastBlockTime(const CKeyID & minter, const uint32_t &blockHeight, const int64_t &time);
-    boost::optional<int64_t> GetMasternodeLastBlockTime(const CKeyID & minter);
+    boost::optional<int64_t> GetMasternodeLastBlockTime(const CKeyID & minter, const uint32_t height);
     void EraseMasternodeLastBlockTime(const uint256 &minter, const uint32_t& blockHeight);
-
     void ForEachMinterNode(std::function<bool(MNBlockTimeKey const &, CLazySerialize<int64_t>)> callback, MNBlockTimeKey const & start = {});
+
+    // Subnode block times
+    void SetSubNodesBlockTime(const CKeyID & minter, const uint32_t &blockHeight, const uint8_t id, const int64_t& time);
+    std::vector<int64_t> GetSubNodesBlockTime(const CKeyID & minter, const uint32_t height);
+    void EraseSubNodesLastBlockTime(const uint256& nodeId, const uint32_t& blockHeight);
+    void ForEachSubNode(std::function<bool(SubNodeBlockTimeKey const &, CLazySerialize<int64_t>)> callback, SubNodeBlockTimeKey const & start = {});
+
+    uint16_t GetTimelock(const uint256& nodeId, const CMasternode& node, const uint64_t height) const;
 
     // tags
     struct ID { static const unsigned char prefix; };
@@ -234,6 +272,10 @@ public:
 
     // For storing last staked block time
     struct Staker { static const unsigned char prefix; };
+    struct SubNode { static const unsigned char prefix; };
+
+    // Store long term time lock
+    struct Timelock { static const unsigned char prefix; };
 };
 
 class CLastHeightView : public virtual CStorageView
@@ -303,15 +345,18 @@ class CCustomCSView
         , public CAnchorRewardsView
         , public CTokensView
         , public CAccountsView
-        , public CAccountsHistoryView
-        , public CRewardsHistoryView
         , public CCommunityBalancesView
         , public CUndosView
         , public CPoolPairView
         , public CGovView
         , public CAnchorConfirmsView
+        , public COracleView
+        , public CICXOrderView
 {
 public:
+    // Increase version when underlaying tables are changed
+    static constexpr const int DbVersion = 1;
+
     CCustomCSView() = default;
 
     CCustomCSView(CStorageKV & st)
@@ -336,36 +381,18 @@ public:
 
     bool CanSpend(const uint256 & txId, int height) const;
 
-    CStorageKV& GetRaw() {
-        return DB();
+    bool CalculateOwnerRewards(CScript const & owner, uint32_t height);
+
+    void SetDbVersion(int version);
+
+    int GetDbVersion() const;
+
+    uint256 MerkleRoot();
+
+    // we construct it as it
+    CFlushableStorageKV& GetStorage() {
+        return static_cast<CFlushableStorageKV&>(DB());
     }
-};
-
-class CAccountsHistoryStorage : public CCustomCSView
-{
-    int acindex;
-    const uint32_t height;
-    const uint32_t txn;
-    const uint256 txid;
-    const uint8_t type;
-    std::map<CScript, TAmounts> diffs;
-public:
-    CAccountsHistoryStorage(CCustomCSView & storage, uint32_t height, uint32_t txn, const uint256& txid, uint8_t type);
-    Res AddBalance(CScript const & owner, CTokenAmount amount) override;
-    Res SubBalance(CScript const & owner, CTokenAmount amount) override;
-    bool Flush();
-};
-
-class CRewardsHistoryStorage : public CCustomCSView
-{
-    int acindex;
-    const uint32_t height;
-    std::map<std::pair<CScript, uint8_t>, std::map<DCT_ID, TAmounts>> diffs;
-    using CCustomCSView::AddBalance;
-public:
-    CRewardsHistoryStorage(CCustomCSView & storage, uint32_t height);
-    Res AddBalance(CScript const & owner, DCT_ID poolID, uint8_t type, CTokenAmount amount);
-    bool Flush();
 };
 
 std::map<CKeyID, CKey> AmISignerNow(CAnchorData::CTeam const & team);

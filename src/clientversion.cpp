@@ -13,7 +13,7 @@
  * for both defid and defi-qt, to make it harder for attackers to
  * target servers or GUI users specifically.
  */
-const std::string CLIENT_NAME("Defichain");
+const std::string CLIENT_NAME("DeFiChain");
 
 /**
  * Client version number
@@ -84,17 +84,6 @@ static std::string FormatVersion(int nVersion)
 std::string FormatFullVersion()
 {
     return CLIENT_BUILD;
-}
-
-int GetClientVersion()
-{
-    // C++11 guarantees thread safe static initialization
-    static const int version = []() {
-        int major = 0, minor = 0, rev = 0;
-        sscanf(BUILD_DESC, "v%d.%d.%d", &major, &minor, &rev);
-        return major * 1000000 + minor * 10000 + rev * 100;
-    }();
-    return version;
 }
 
 /**

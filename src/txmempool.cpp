@@ -550,6 +550,19 @@ void CTxMemPool::removeConflicts(const CTransaction &tx)
     }
 }
 
+CTxMemPool::~CTxMemPool()
+{
+}
+
+CCustomCSView& CTxMemPool::accountsView()
+{
+    if (!acview) {
+        assert(pcustomcsview);
+        acview = MakeUnique<CCustomCSView>(*pcustomcsview);
+    }
+    return *acview;
+}
+
 /**
  * Called when a block is connected. Removes from mempool and updates the miner fee estimator.
  */
@@ -580,7 +593,8 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
     if (pcustomcsview) { // can happen in tests
         // check entire mempool
         CAmount txfee = 0;
-        CCustomCSView viewDuplicate(*pcustomcsview);
+        accountsView().Discard();
+        CCustomCSView viewDuplicate(accountsView());
         CCoinsViewCache mempoolDuplicate(&::ChainstateActive().CoinsTip());
 
         setEntries staged;
@@ -594,7 +608,7 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
                 staged.insert(mapTx.project<0>(it));
                 continue;
             }
-            auto res = ApplyCustomTx(viewDuplicate, mempoolDuplicate, tx, Params().GetConsensus(), nBlockHeight, 0, uint64_t{0}, false);
+            auto res = ApplyCustomTx(viewDuplicate, mempoolDuplicate, tx, Params().GetConsensus(), nBlockHeight);
             if (!res.ok && (res.code & CustomTxErrCodes::Fatal)) {
                 LogPrintf("%s: Remove conflicting custom TX: %s\n", __func__, tx.GetHash().GetHex());
                 staged.insert(mapTx.project<0>(it));
@@ -608,6 +622,7 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
         }
 
         RemoveStaged(staged, true, MemPoolRemovalReason::BLOCK);
+        viewDuplicate.Flush();
     }
 
     lastRollingFeeUpdate = GetTime();
@@ -638,6 +653,7 @@ static void CheckInputsAndUpdateCoins(const CTransaction& tx, CCoinsViewCache& m
     CValidationState state;
     CAmount txfee = 0;
     bool fCheckResult = tx.IsCoinBase() || Consensus::CheckTxInputs(tx, state, mempoolDuplicate, mnview, spendheight, txfee, chainparams);
+    fCheckResult = fCheckResult && CheckBurnSpend(tx, mempoolDuplicate);
     assert(fCheckResult);
     UpdateCoins(tx, mempoolDuplicate, std::numeric_limits<int>::max());
 }
@@ -956,8 +972,26 @@ size_t CTxMemPool::DynamicMemoryUsage() const {
 void CTxMemPool::RemoveStaged(const setEntries &stage, bool updateDescendants, MemPoolRemovalReason reason) {
     AssertLockHeld(cs);
     UpdateForRemoveFromMempool(stage, updateDescendants);
+    std::set<uint256> txids;
     for (txiter it : stage) {
+        txids.insert(it->GetTx().GetHash());
         removeUnchecked(it, reason);
+    }
+    if (pcustomcsview && !txids.empty()) {
+        auto& view = accountsView();
+        std::map<uint32_t, uint256> orderedTxs;
+        auto it = NewKVIterator<CUndosView::ByUndoKey>(UndoKey{}, view.GetStorage().GetRaw());
+        for (; it.Valid() && !txids.empty(); it.Next()) {
+            auto& key = it.Key();
+            auto itTx = txids.find(key.txid);
+            if (itTx != txids.end()) {
+                orderedTxs.emplace(key.height, key.txid);
+                txids.erase(itTx);
+            }
+        }
+        for (auto it = orderedTxs.rbegin(); it != orderedTxs.rend(); ++it) {
+            view.OnUndoTx(it->second, it->first);
+        }
     }
 }
 

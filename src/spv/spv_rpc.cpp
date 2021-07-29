@@ -5,25 +5,25 @@
 #include <base58.h>
 #include <chainparams.h>
 #include <core_io.h>
-#include <rpc/client.h>
 #include <rpc/server.h>
 #include <rpc/protocol.h>
 #include <rpc/util.h>
 #include <masternodes/anchors.h>
-#include <masternodes/masternodes.h>
 #include <masternodes/mn_rpc.h>
 #include <spv/btctransaction.h>
 #include <spv/spv_wrapper.h>
 #include <univalue/include/univalue.h>
 
 //#ifdef ENABLE_WALLET
-#include <wallet/coincontrol.h>
 #include <wallet/rpcwallet.h>
 #include <wallet/wallet.h>
 //#endif
 
 #include <stdexcept>
 #include <future>
+
+// Minimum allowed block count in HTLC contract
+const uint32_t HTLC_MINIMUM_BLOCK_COUNT{9};
 
 UniValue spv_sendrawtx(const JSONRPCRequest& request)
 {
@@ -145,6 +145,7 @@ UniValue spv_createanchor(const JSONRPCRequest& request)
     CAnchor anchor;
     {
         auto locked_chain = pwallet->chain().lock();
+        LOCK(locked_chain->mutex());
 
         anchor = panchorauths->CreateBestAnchor(rewardDest);
         prevAnchorHeight = panchors->GetActiveAnchor() ? panchors->GetActiveAnchor()->anchor.height : 0;
@@ -215,6 +216,9 @@ UniValue spv_createanchortemplate(const JSONRPCRequest& request)
         },
     }.Check(request);
 
+    if (!spv::pspv) {
+        throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
+    }
 
     if (pwallet->chain().isInitialBlockDownload()) {
         throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Cannot create anchor while still in Initial Block Download");
@@ -230,6 +234,7 @@ UniValue spv_createanchortemplate(const JSONRPCRequest& request)
     CAnchor anchor;
     {
         auto locked_chain = pwallet->chain().lock();
+        LOCK(locked_chain->mutex());
 
         anchor = panchorauths->CreateBestAnchor(rewardDest);
         prevAnchorHeight = panchors->GetActiveAnchor() ? panchors->GetActiveAnchor()->anchor.height : 0;
@@ -294,6 +299,7 @@ UniValue spv_estimateanchorcost(const JSONRPCRequest& request)
     }
 
     auto locked_chain = pwallet->chain().lock();
+    LOCK(locked_chain->mutex());
 
     // it is unable to create "pure" dummy anchor, cause it needs signing with real key
     CAnchor const anchor = panchorauths->CreateBestAnchor(CTxDestination(PKHash()));
@@ -387,8 +393,32 @@ UniValue spv_gettxconfirmations(const JSONRPCRequest& request)
 //    uint32_t const spvLastHeight = spv::pspv ? spv::pspv->GetLastBlockHeight() : 0;
 
     auto locked_chain = pwallet->chain().lock();
+    LOCK(locked_chain->mutex());
 //    panchors->UpdateLastHeight(spvLastHeight);
     return UniValue(panchors->GetAnchorConfirmations(txHash));
+}
+
+// Populate anchors in listanchors, listanchorspending and listanchorsunrewarded
+void AnchorToUniv(const CAnchorIndex::AnchorRec& rec, UniValue& anchor)
+{
+    CTxDestination rewardDest = rec.anchor.rewardKeyType == 1 ? CTxDestination(PKHash(rec.anchor.rewardKeyID)) : CTxDestination(WitnessV0KeyHash(rec.anchor.rewardKeyID));
+    anchor.pushKV("btcBlockHeight", static_cast<int>(rec.btcHeight));
+    anchor.pushKV("btcBlockHash", panchors->ReadBlockHash(rec.btcHeight).ToString());
+    anchor.pushKV("btcTxHash", rec.txHash.ToString());
+    anchor.pushKV("previousAnchor", rec.anchor.previousAnchor.ToString());
+    anchor.pushKV("defiBlockHeight", static_cast<int>(rec.anchor.height));
+    anchor.pushKV("defiBlockHash", rec.anchor.blockHash.ToString());
+    anchor.pushKV("rewardAddress", EncodeDestination(rewardDest));
+    anchor.pushKV("confirmations", panchors->GetAnchorConfirmations(&rec));
+    anchor.pushKV("signatures", static_cast<int>(rec.anchor.sigs.size()));
+
+    // If post-fork show creation height
+    uint64_t anchorCreationHeight{0};
+    std::shared_ptr<std::vector<unsigned char>> prefix;
+    if (rec.anchor.nextTeam.size() == 1 && GetAnchorEmbeddedData(*rec.anchor.nextTeam.begin(), anchorCreationHeight, prefix))
+    {
+        anchor.pushKV("anchorCreationHeight", static_cast<int>(anchorCreationHeight));
+    }
 }
 
 UniValue spv_listanchors(const JSONRPCRequest& request)
@@ -427,6 +457,7 @@ UniValue spv_listanchors(const JSONRPCRequest& request)
     uint32_t const tmp = spv::pspv->GetLastBlockHeight();
 
     auto locked_chain = pwallet->chain().lock();
+    LOCK(locked_chain->mutex());
 
     panchors->UpdateLastHeight(tmp); // may be unnecessary but for sure
     auto const * cur = panchors->GetActiveAnchor();
@@ -439,25 +470,9 @@ UniValue spv_listanchors(const JSONRPCRequest& request)
         if ( (minBtcHeight >= 0 && (int)rec.btcHeight < minBtcHeight) || (maxConfs >= 0 && confs > maxConfs) )
             return false; // break
 
-
-        CTxDestination rewardDest = rec.anchor.rewardKeyType == 1 ? CTxDestination(PKHash(rec.anchor.rewardKeyID)) : CTxDestination(WitnessV0KeyHash(rec.anchor.rewardKeyID));
         UniValue anchor(UniValue::VOBJ);
-        anchor.pushKV("btcBlockHeight", static_cast<int>(rec.btcHeight));
-        anchor.pushKV("btcTxHash", rec.txHash.ToString());
-        anchor.pushKV("previousAnchor", rec.anchor.previousAnchor.ToString());
-        anchor.pushKV("defiBlockHeight", static_cast<int>(rec.anchor.height));
-        anchor.pushKV("defiBlockHash", rec.anchor.blockHash.ToString());
-        anchor.pushKV("rewardAddress", EncodeDestination(rewardDest));
-        anchor.pushKV("confirmations", panchors->GetAnchorConfirmations(&rec));
+        AnchorToUniv(rec, anchor);
 
-        // If post-fork show creation height
-        uint64_t anchorCreationHeight{0};
-        std::shared_ptr<std::vector<unsigned char>> prefix;
-        if (rec.anchor.nextTeam.size() == 1 && GetAnchorEmbeddedData(*rec.anchor.nextTeam.begin(), anchorCreationHeight, prefix)) {
-            anchor.pushKV("anchorCreationHeight", static_cast<int>(anchorCreationHeight));
-        }
-
-        anchor.pushKV("signatures", static_cast<int>(rec.anchor.sigs.size()));
         bool const isActive = cur && cur->txHash == rec.txHash;
         anchor.pushKV("active", isActive);
         if (isActive) {
@@ -493,27 +508,13 @@ UniValue spv_listanchorspending(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
 
     auto locked_chain = pwallet->chain().lock();
+    LOCK(locked_chain->mutex());
 
     UniValue result(UniValue::VARR);
-    panchors->ForEachPending([&result](uint256 const &, CAnchorIndex::AnchorRec & rec) {
-
-        CTxDestination rewardDest = rec.anchor.rewardKeyType == 1 ? CTxDestination(PKHash(rec.anchor.rewardKeyID)) : CTxDestination(WitnessV0KeyHash(rec.anchor.rewardKeyID));
+    panchors->ForEachPending([&result](uint256 const &, CAnchorIndex::AnchorRec & rec)
+    {
         UniValue anchor(UniValue::VOBJ);
-        anchor.pushKV("btcBlockHeight", static_cast<int>(rec.btcHeight));
-        anchor.pushKV("btcTxHash", rec.txHash.ToString());
-        anchor.pushKV("previousAnchor", rec.anchor.previousAnchor.ToString());
-        anchor.pushKV("defiBlockHeight", static_cast<int>(rec.anchor.height));
-        anchor.pushKV("defiBlockHash", rec.anchor.blockHash.ToString());
-        anchor.pushKV("rewardAddress", EncodeDestination(rewardDest));
-        anchor.pushKV("confirmations", panchors->GetAnchorConfirmations(&rec));
-        anchor.pushKV("signatures", static_cast<int>(rec.anchor.sigs.size()));
-
-        // If post-fork show creation height
-        uint64_t anchorCreationHeight{0};
-        std::shared_ptr<std::vector<unsigned char>> prefix;
-        if (rec.anchor.nextTeam.size() == 1 && GetAnchorEmbeddedData(*rec.anchor.nextTeam.begin(), anchorCreationHeight, prefix)) {
-            anchor.pushKV("anchorCreationHeight", static_cast<int>(anchorCreationHeight));
-        }
+        AnchorToUniv(rec, anchor);
 
         result.push_back(anchor);
         return true;
@@ -540,6 +541,7 @@ UniValue spv_listanchorauths(const JSONRPCRequest& request)
     }.Check(request);
 
     auto locked_chain = pwallet->chain().lock();
+    LOCK(locked_chain->mutex());
 
     UniValue result(UniValue::VARR);
     CAnchorAuthIndex::Auth const * prev = nullptr;
@@ -558,9 +560,7 @@ UniValue spv_listanchorauths(const JSONRPCRequest& request)
             item.pushKV("previousAnchor", prev->previousAnchor.ToString());
             item.pushKV("blockHeight", static_cast<int>(prev->height));
             item.pushKV("blockHash", prev->blockHash.ToString());
-            if (anchorCreationHeight != 0) {
-                item.pushKV("creationHeight", static_cast<int>(anchorCreationHeight));
-            }
+            item.pushKV("creationHeight", static_cast<int>(anchorCreationHeight));
             item.pushKV("signers", (uint64_t)signers.size());
 
             UniValue signees(UniValue::VARR);
@@ -611,9 +611,7 @@ UniValue spv_listanchorauths(const JSONRPCRequest& request)
         item.pushKV("previousAnchor", prev->previousAnchor.ToString());
         item.pushKV("blockHeight", static_cast<int>(prev->height));
         item.pushKV("blockHash", prev->blockHash.ToString());
-        if (anchorCreationHeight != 0) {
-            item.pushKV("creationHeight", static_cast<int>(anchorCreationHeight));
-        }
+        item.pushKV("creationHeight", static_cast<int>(anchorCreationHeight));
         item.pushKV("signers", (uint64_t)signers.size());
 
         UniValue signees(UniValue::VARR);
@@ -648,6 +646,7 @@ UniValue spv_listanchorrewardconfirms(const JSONRPCRequest& request)
     }.Check(request);
 
     auto locked_chain = pwallet->chain().lock();
+    LOCK(locked_chain->mutex());
 
     UniValue result(UniValue::VARR);
 
@@ -714,6 +713,7 @@ UniValue spv_listanchorrewards(const JSONRPCRequest& request)
     }.Check(request);
 
     auto locked_chain = pwallet->chain().lock();
+    LOCK(locked_chain->mutex());
 
     UniValue result(UniValue::VARR);
 
@@ -746,6 +746,7 @@ UniValue spv_listanchorsunrewarded(const JSONRPCRequest& request)
     }.Check(request);
 
     auto locked_chain = pwallet->chain().lock();
+    LOCK(locked_chain->mutex());
 
     UniValue result(UniValue::VARR);
 
@@ -753,11 +754,7 @@ UniValue spv_listanchorsunrewarded(const JSONRPCRequest& request)
     for (auto const & btcTxHash : unrewarded) {
         auto rec = panchors->GetAnchorByTx(btcTxHash);
         UniValue item(UniValue::VOBJ);
-        item.pushKV("previousAnchor", rec->anchor.previousAnchor.ToString());
-        item.pushKV("dfiHeight", static_cast<int>(rec->anchor.height));
-        item.pushKV("dfiHash", rec->anchor.blockHash.ToString());
-        item.pushKV("btcHeight", static_cast<int>(rec->btcHeight));
-        item.pushKV("btcHash", btcTxHash.ToString());
+        AnchorToUniv(*rec, item);
         result.push_back(item);
     }
 
@@ -829,6 +826,43 @@ UniValue spv_decodehtlcscript(const JSONRPCRequest& request)
     return result;
 }
 
+CPubKey PublickeyFromString(const std::string &pubkey)
+{
+    if (!IsHex(pubkey) || (pubkey.length() != 66 && pubkey.length() != 130))
+    {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid public key: " + pubkey);
+    }
+
+    return HexToPubKey(pubkey);
+}
+
+CScript CreateScriptForHTLC(const JSONRPCRequest& request, uint32_t& blocks, std::vector<unsigned char>& image)
+{
+    CPubKey seller_key = PublickeyFromString(request.params[0].get_str());
+    CPubKey refund_key = PublickeyFromString(request.params[1].get_str());
+
+    {
+        UniValue timeout;
+        if (!timeout.read(std::string("[") + request.params[2].get_str() + std::string("]")) || !timeout.isArray() || timeout.size() != 1)
+        {
+            throw JSONRPCError(RPC_TYPE_ERROR, "Error parsing JSON: " + request.params[3].get_str());
+        }
+
+        blocks = timeout[0].get_int();
+    }
+
+    if (blocks >= CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG)
+    {
+        throw JSONRPCError(RPC_TYPE_ERROR, "Invalid block denominated relative timeout");
+    }
+    else if (blocks < HTLC_MINIMUM_BLOCK_COUNT)
+    {
+        throw JSONRPCError(RPC_TYPE_ERROR, "Timeout below minimum of " + std::to_string(HTLC_MINIMUM_BLOCK_COUNT));
+    }
+
+    return GetScriptForHTLC(seller_key, refund_key, image, blocks);
+}
+
 UniValue spv_createhtlc(const JSONRPCRequest& request)
 {
     CWallet* const pwallet = GetWallet(request);
@@ -839,7 +873,7 @@ UniValue spv_createhtlc(const JSONRPCRequest& request)
         {
             {"receiverPubkey", RPCArg::Type::STR, RPCArg::Optional::NO, "The public key of the possessor of the seed"},
             {"ownerPubkey", RPCArg::Type::STR, RPCArg::Optional::NO, "The public key of the recipient of the refund"},
-            {"timeout", RPCArg::Type::STR, RPCArg::Optional::NO, "Timeout of the contract (denominated in blocks) relative to its placement in the blockchain"},
+            {"timeout", RPCArg::Type::STR, RPCArg::Optional::NO, "Timeout of the contract (denominated in blocks) relative to its placement in the blockchain. Minimum " + std::to_string(HTLC_MINIMUM_BLOCK_COUNT) + "."},
             {"seed", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "SHA256 hash of the seed. If none provided one will be generated"},
         },
         RPCResult{
@@ -859,6 +893,17 @@ UniValue spv_createhtlc(const JSONRPCRequest& request)
     if (!spv::pspv)
     {
         throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
+    }
+
+    // Check that we are connected
+    if (!spv::pspv->IsConnected()) {
+        throw JSONRPCError(RPC_MISC_ERROR, "spv not connected");
+    }
+
+    // Make sure we are fully synced
+    if (spv::pspv->GetLastBlockHeight() < spv::pspv->GetEstimatedBlockHeight()) {
+        auto blocksRemaining = std::to_string(spv::pspv->GetEstimatedBlockHeight() -spv::pspv->GetLastBlockHeight());
+        throw JSONRPCError(RPC_MISC_ERROR, "spv still syncing, " + blocksRemaining + " blocks left.");
     }
 
     std::vector<unsigned char> hashBytes;
@@ -908,10 +953,7 @@ UniValue spv_createhtlc(const JSONRPCRequest& request)
 
     // Add to SPV to watch transactions to this script
     spv::pspv->AddBitcoinHash(scriptHash, true);
-    spv::pspv->RebuildBloomFilter();
-
-    // Rescan negative blocks deep in case we are importing after Bitcoin send
-    spv::pspv->Rescan(-blocks);
+    spv::pspv->RebuildBloomFilter(true);
 
     // Create Bitcoin address
     std::vector<unsigned char> data(21, spv::pspv->GetP2SHPrefix());
@@ -1181,7 +1223,7 @@ static UniValue spv_dumpprivkey(const JSONRPCRequest& request)
     }.Check(request);
 
     auto locked_chain = pwallet->chain().lock();
-    LOCK(pwallet->cs_wallet);
+    LOCK2(pwallet->cs_wallet, locked_chain->mutex());
 
     std::string strAddress = request.params[0].get_str();
 
@@ -1251,7 +1293,7 @@ static UniValue spv_sendtoaddress(const JSONRPCRequest& request)
     }
 
     auto locked_chain = pwallet->chain().lock();
-    LOCK(pwallet->cs_wallet);
+    LOCK2(pwallet->cs_wallet, locked_chain->mutex());
 
     std::string address = request.params[0].get_str();
 
@@ -1384,6 +1426,7 @@ static UniValue spv_validateaddress(const JSONRPCRequest& request)
         RPCResult{
             "{\n"
             "  \"isvalid\" : true|false,       (boolean) If the address is valid or not.\n"
+            "  \"ismine\" : true|false,        (boolean) If the address belongs to the wallet.\n"
             "}\n"
         },
         RPCExamples{
@@ -1397,10 +1440,81 @@ static UniValue spv_validateaddress(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
     }
 
-    const auto isValid = spv::pspv->ValidateAddress(request.params[0].get_str().c_str());
-    UniValue ret(UniValue::VOBJ);
-    ret.pushKV("isvalid", isValid);
-    return ret;
+    return spv::pspv->ValidateAddress(request.params[0].get_str().c_str());
+}
+
+static UniValue spv_getalladdresses(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"spv_getalladdresses",
+        "\nReturns all user Bitcoin addresses.\n",
+        {
+        },
+        RPCResult{
+            "\"array\"                  (Array of user addresses)\n"
+        },
+        RPCExamples{
+            HelpExampleCli("spv_getalladdresses", "")
+            + HelpExampleRpc("spv_getalladdresses", "")
+        },
+    }.Check(request);
+
+    if (!spv::pspv)
+    {
+        throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
+    }
+
+    return spv::pspv->GetAllAddress();
+}
+
+static UniValue spv_getfeerate(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"spv_getfeerate",
+               "\nReturns current fee rate in Sats per KB.\n",
+               {
+               },
+               RPCResult{
+                       "nnnn                  (Fee rate)\n"
+               },
+               RPCExamples{
+                       HelpExampleCli("spv_getfeerate", "")
+                       + HelpExampleRpc("spv_getfeerate", "")
+               },
+    }.Check(request);
+
+    if (!spv::pspv)
+    {
+        throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
+    }
+
+    return spv::pspv->GetFeeRate();
+}
+
+static UniValue spv_getpeers(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"spv_getpeers",
+               "\nReturns info on connected peers.\n",
+               {
+               },
+               RPCResult{
+                 "X {                                (Peer number)\n"
+                       "  address: xxx.xxx.xxx.xxx          (IP Address)\n"
+                       "  timestamp: nnn                    (time)\n"
+                       "  flags: nnn                        (flags)\n"
+                       "  services: nnn                     (services)\n"
+                       "}\n"
+               },
+               RPCExamples{
+                       HelpExampleCli("spv_getpeers", "")
+                       + HelpExampleRpc("spv_getpeers", "")
+               },
+    }.Check(request);
+
+    if (!spv::pspv)
+    {
+        throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
+    }
+
+    return spv::pspv->GetPeers();
 }
 
 
@@ -1435,6 +1549,9 @@ static const CRPCCommand commands[] =
   { "spv",      "spv_gethtlcseed",            &spv_gethtlcseed,           { "address" }  },
   { "spv",      "spv_listreceivedbyaddress",  &spv_listreceivedbyaddress, { "minconf", "address_filter" }  },
   { "spv",      "spv_validateaddress",        &spv_validateaddress,       { "address"}  },
+  { "spv",      "spv_getalladdresses",        &spv_getalladdresses,       { }  },
+  { "spv",      "spv_getfeerate",             &spv_getfeerate,            { }  },
+  { "spv",      "spv_getpeers",               &spv_getpeers,              { }  },
   { "hidden",   "spv_setlastheight",          &spv_setlastheight,         { "height" }  },
   { "hidden",   "spv_fundaddress",            &spv_fundaddress,           { "address" }  },
 };

@@ -50,6 +50,13 @@ class BitcoinHTLCTests(DefiTestFramework):
             errorString = e.error['message']
             assert("Invalid block denominated relative timeout" in errorString)
 
+        # Try annd create a HTLC script below min blocks
+        try:
+            self.nodes[0].spv_createhtlc("0224e7de2f3a9d4cdc4fdc14601c75176287297c212aae9091404956955f1aea86", "035fb3eadde611a39036e61d4c8288d1b896f2c94cee49e60a3d1c02236f4be490", "8", seed_hash)
+        except JSONRPCException as e:
+            errorString = e.error['message']
+            assert("Timeout below minimum of" in errorString)
+
         # Try annd create a HTLC script with incorrect pubkey
         try:
             self.nodes[0].spv_createhtlc("0224e7de2f3a9d4cdc4fdc14601c75176287297c212aae9091404956955f1aea", "035fb3eadde611a39036e61d4c8288d1b896f2c94cee49e60a3d1c02236f4be490", "10", seed_hash)
@@ -213,35 +220,35 @@ class BitcoinHTLCTests(DefiTestFramework):
             self.nodes[0].spv_decodehtlcscript("63a821df95183883789f237977543885e1f82ddc045a3ba90c8f25b43a5b797a35d20e88210224e7de2f3a9d4cdc4fdc14601c75176287297c212aae9091404956955f1aea86675ab27521035fb3eadde611a39036e61d4c8288d1b896f2c94cee49e60a3d1c02236f4be49068ac")
         except JSONRPCException as e:
             errorString = e.error['message']
-            assert("Incorrect seed hash length" in errorString)
+        assert("Incorrect seed hash length" in errorString)
 
         # Incorrect seller pubkey length
         try:
             self.nodes[0].spv_decodehtlcscript("63a820df95183883789f237977543885e1f82ddc045a3ba90c8f25b43a5b797a35d20e88200224e7de2f3a9d4cdc4fdc14601c75176287297c212aae9091404956955f1aea86675ab27521035fb3eadde611a39036e61d4c8288d1b896f2c94cee49e60a3d1c02236f4be49068ac")
         except JSONRPCException as e:
             errorString = e.error['message']
-            assert("Seller pubkey incorrect pubkey length" in errorString)
+        assert("Seller pubkey incorrect pubkey length" in errorString)
 
         # Incorrect time length
         try:
             self.nodes[0].spv_decodehtlcscript("63a820df95183883789f237977543885e1f82ddc045a3ba90c8f25b43a5b797a35d20e88210224e7de2f3a9d4cdc4fdc14601c75176287297c212aae9091404956955f1aea866750b27521035fb3eadde611a39036e61d4c8288d1b896f2c94cee49e60a3d1c02236f4be49068")
         except JSONRPCException as e:
             errorString = e.error['message']
-            assert("Incorrect timeout length" in errorString)
+        assert("Incorrect timeout length" in errorString)
 
         # Incorrect buyer pubkey length
         try:
-            self.nodes[0].spv_decodehtlcscript("63a820df95183883789f237977543885e1f82ddc045a3ba90c8f25b43a5b797a35d20e88210224e7de2f3a9d4cdc4fdc14601c75176287297c212aae9091404956955f1aea86675ab27521035fb3eadde611a39036e61d4c8288d1b896f2c94cee49e60a3d1c02236f4be49068ac")
+            self.nodes[0].spv_decodehtlcscript("63a820df95183883789f237977543885e1f82ddc045a3ba90c8f25b43a5b797a35d20e88210224e7de2f3a9d4cdc4fdc14601c75176287297c212aae9091404956955f1aea86675ab27520035fb3eadde611a39036e61d4c8288d1b896f2c94cee49e60a3d1c02236f4be49068ac")
         except JSONRPCException as e:
             errorString = e.error['message']
-            assert("Buyer pubkey incorrect pubkey length" in errorString)
+        assert("Buyer pubkey incorrect pubkey length" in errorString)
 
         # Incorrect redeemscript length
         try:
             self.nodes[0].spv_decodehtlcscript("63a820df95183883789f237977543885e1f82ddc045a3ba90c8f25b43a5b797a35d20e88210224e7de2f3a9d4cdc4fdc14601c75176287297c212aae9091404956955f1aea86675ab27521035fb3eadde611a39036e61d4c8288d1b896f2c94cee49e60a3d1c02236f4be49068")
         except JSONRPCException as e:
             errorString = e.error['message']
-            assert("Incorrect redeemscript length" in errorString)
+        assert("Incorrect redeemscript length" in errorString)
 
 if __name__ == '__main__':
     BitcoinHTLCTests().main()

@@ -30,7 +30,7 @@ static void DuplicateInputs(benchmark::State& state)
     LOCK(cs_main);
     CBlockIndex* pindexPrev = ::ChainActive().Tip();
     assert(pindexPrev != nullptr);
-    block.nBits = pos::GetNextWorkRequired(pindexPrev, &block, chainparams.GetConsensus().pos);
+    block.nBits = pos::GetNextWorkRequired(pindexPrev, block.nTime, chainparams.GetConsensus());
     // block.nNonce = 0;
     auto nHeight = pindexPrev->nHeight + 1;
 
@@ -60,7 +60,8 @@ static void DuplicateInputs(benchmark::State& state)
 
     while (state.KeepRunning()) {
         CValidationState cvstate{};
-        assert(!CheckBlock(block, cvstate, chainparams.GetConsensus(), false, false));
+        CheckContextState ctxState;
+        assert(!CheckBlock(block, cvstate, chainparams.GetConsensus(), ctxState, false, false));
         assert(cvstate.GetRejectReason() == "bad-txns-inputs-duplicate");
     }
 }

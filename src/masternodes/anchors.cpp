@@ -12,6 +12,7 @@
 #include <streams.h>
 #include <script/standard.h>
 #include <spv/spv_wrapper.h>
+#include <timedata.h>
 #include <util/system.h>
 #include <util/validation.h>
 #include <validation.h>
@@ -26,17 +27,7 @@ std::unique_ptr<CAnchorAwaitingConfirms> panchorAwaitingConfirms;
 
 static const char DB_ANCHORS = 'A';
 static const char DB_PENDING = 'p';
-
-template <typename TContainer>
-bool CheckSigs(uint256 const & sigHash, TContainer const & sigs, std::set<CKeyID> const & keys)
-{
-    for (auto const & sig : sigs) {
-        CPubKey pubkey;
-        if (!pubkey.RecoverCompact(sigHash, sig) || keys.find(pubkey.GetID()) == keys.end())
-            return false;
-    }
-    return true;
-}
+static const char DB_BITCOININDEX = 'Z';  // Bitcoin height to blockhash table
 
 uint256 CAnchorData::GetSignHash() const
 {
@@ -94,14 +85,20 @@ CAnchor CAnchor::Create(const std::vector<CAnchorAuthMessage> & auths, CTxDestin
     return {};
 }
 
-bool CAnchor::CheckAuthSigs(CTeam const & team) const
+bool CAnchor::CheckAuthSigs(CTeam const & team, const uint32_t height) const
 {
     // Sigs must meet quorum size.
-    if (sigs.size() < GetMinAnchorQuorum(team)) {
+    auto quorum = GetMinAnchorQuorum(team);
+    if (sigs.size() < quorum) {
         return error("%s: Anchor auth team quorum not met. Min quorum: %d sigs size %d", __func__, GetMinAnchorQuorum(team), sigs.size());
     }
 
-    return CheckSigs(GetSignHash(), sigs, team);
+    auto uniqueKeys = CheckSigs(GetSignHash(), sigs, team);
+    if (height >= Params().GetConsensus().EunosPayaHeight && uniqueKeys < quorum) {
+        return error("%s: Anchor auth team unique key quorum not met. Min quorum: %d keys size %d", __func__, GetMinAnchorQuorum(team), uniqueKeys);
+    }
+
+    return uniqueKeys;
 }
 
 const CAnchorAuthIndex::Auth * CAnchorAuthIndex::GetAuth(uint256 const & msgHash) const
@@ -125,8 +122,6 @@ const CAnchorAuthIndex::Auth * CAnchorAuthIndex::GetVote(const uint256 & signHas
 bool CAnchorAuthIndex::ValidateAuth(const CAnchorAuthIndex::Auth & auth) const
 {
     AssertLockHeld(cs_main);
-
-    bool newAnchorLogic{::ChainActive().Height() >= Params().GetConsensus().DakotaHeight};
 
     // 1. Prev and top checks
 
@@ -153,20 +148,16 @@ bool CAnchorAuthIndex::ValidateAuth(const CAnchorAuthIndex::Auth & auth) const
                 return false;
             }
 
-            // Add extra checks to make sure we are forming an anchor chain
-            if (newAnchorLogic)
-            {
-                // Top anchor should chain from previous anchor if it exists
-                if (auth.previousAnchor.IsNull()) {
-                    LogPrint(BCLog::ANCHORING, "%s: anchor does not have previous anchor set to top anchor\n", __func__);
-                    return false;
-                }
+            // Top anchor should chain from previous anchor if it exists
+            if (auth.previousAnchor.IsNull()) {
+                LogPrint(BCLog::ANCHORING, "%s: anchor does not have previous anchor set to top anchor\n", __func__);
+                return false;
+            }
 
-                // Previous anchor should link to top anchor
-                if (auth.previousAnchor != topAnchor->txHash) {
-                    LogPrint(BCLog::ANCHORING, "%s: anchor previousAnchor does not match top anchor\n", __func__);
-                    return false;
-                }
+            // Previous anchor should link to top anchor
+            if (auth.previousAnchor != topAnchor->txHash) {
+                LogPrint(BCLog::ANCHORING, "%s: anchor previousAnchor does not match top anchor\n", __func__);
+                return false;
             }
         }
     }
@@ -180,25 +171,16 @@ bool CAnchorAuthIndex::ValidateAuth(const CAnchorAuthIndex::Auth & auth) const
 
     // 3. Full anchor validation and team context
     CTeam team;
-    if (newAnchorLogic) {
-        uint64_t anchorCreationHeight;
-        CBlockIndex block;
-        if (!ContextualValidateAnchor(auth, block, anchorCreationHeight)) {
-            return false;
-        }
+    uint64_t anchorCreationHeight;
+    CBlockIndex anchorBlock;
+    if (!ContextualValidateAnchor(auth, anchorBlock, anchorCreationHeight)) {
+        return false;
+    }
 
-        // Let's try and get the team that set this anchor
-        auto anchorTeam = pcustomcsview->GetAuthTeam(anchorCreationHeight);
-        if (anchorTeam) {
-            team = *anchorTeam;
-        }
-    } else {
-        team = panchors->GetNextTeam(auth.previousAnchor);
-
-        if (auth.nextTeam != pcustomcsview->CalcNextTeam(block->stakeModifier)) {
-            LogPrint(BCLog::ANCHORING, "%s: Wrong nextTeam for auth %s\n", __func__, auth.GetHash().ToString());
-            return false;
-        }
+    // Let's try and get the team that set this anchor
+    auto anchorTeam = pcustomcsview->GetAuthTeam(anchorCreationHeight);
+    if (anchorTeam) {
+        team = *anchorTeam;
     }
 
     if (team.empty()) {
@@ -257,8 +239,7 @@ CAnchor CAnchorAuthIndex::CreateBestAnchor(CTxDestination const & rewardDest) co
     KList const & list = auths.get<Auth::ByKey>();
 
     auto const topAnchor = panchors->GetActiveAnchor();
-    auto const topTeam = panchors->GetCurrentTeam(topAnchor);
-    uint32_t quorum = GetMinAnchorQuorum(topTeam);
+    uint32_t quorum = 1 + (Params().GetConsensus().mn.anchoringTeamSize * 2) / 3;
     auto const topHeight = topAnchor ? topAnchor->anchor.height : 0;
     LogPrint(BCLog::ANCHORING, "auths size: %d quorum: %d\n", list.size(), quorum);
 
@@ -277,8 +258,7 @@ CAnchor CAnchorAuthIndex::CreateBestAnchor(CTxDestination const & rewardDest) co
             curHeight = it->height;
             curSignHash = it->GetSignHash();
 
-            // Post fork anchor auth only have one team member. Check it is present here before reading from it!
-            if (ChainActive().Height() >= Params().GetConsensus().DakotaHeight && it->nextTeam.size() == 1)
+            if (it->nextTeam.size() == 1)
             {
                 // Team data reference
                 const CKeyID& teamData = *it->nextTeam.begin();
@@ -294,9 +274,6 @@ CAnchor CAnchorAuthIndex::CreateBestAnchor(CTxDestination const & rewardDest) co
                     if (team) {
                         // Now we can set the appropriate quorum size
                         quorum = GetMinAnchorQuorum(*team);
-                    } else {
-                        // Should not get here but set max size if we do
-                        quorum = 1 + (Params().GetConsensus().mn.anchoringTeamSize * 2) / 3;
                     }
                 }
             }
@@ -307,6 +284,12 @@ CAnchor CAnchorAuthIndex::CreateBestAnchor(CTxDestination const & rewardDest) co
             if (count >= quorum) {
                 KList::iterator it0, it0Copy, it1;
                 std::tie(it0,it1) = list.equal_range(std::make_tuple(curHeight, curSignHash));
+
+                // Fix to avoid "Anchor too new" error until F hard fork
+                auto anchorIndex = ::ChainActive()[it0->height];
+                if (!anchorIndex || anchorIndex->nTime + Params().GetConsensus().mn.anchoringTimeDepth > GetAdjustedTime()) {
+                    continue;
+                }
 
                 uint32_t validCount{0};
                 it0Copy = it0;
@@ -459,16 +442,6 @@ CAnchorData::CTeam CAnchorIndex::GetNextTeam(const uint256 & btcPrevTx) const
     return prev->anchor.nextTeam;
 }
 
-CAnchorData::CTeam CAnchorIndex::GetCurrentTeam(const CAnchorIndex::AnchorRec * anchor) const
-{
-    AssertLockHeld(cs_main);
-
-    if (!anchor)
-        return Params().GetGenesisTeam();
-
-    return GetNextTeam(anchor->anchor.previousAnchor);
-}
-
 CAnchorIndex::AnchorRec const * CAnchorIndex::GetAnchorByBtcTx(uint256 const & txHash) const
 {
     AssertLockHeld(cs_main);
@@ -526,7 +499,7 @@ void CAnchorIndex::CheckPendingAnchors()
 {
     AssertLockHeld(cs_main);
 
-    std::set<AnchorRec, decltype(OrderPendingAnchors)> anchorsPending(OrderPendingAnchors);
+    spv::PendingSet anchorsPending(spv::PendingOrder);
     ForEachPending([&anchorsPending](uint256 const &, AnchorRec & rec) {
         anchorsPending.insert(rec);
     });
@@ -546,11 +519,12 @@ void CAnchorIndex::CheckPendingAnchors()
             continue;
         }
 
-        uint32_t timestamp = spv::pspv->ReadTxTimestamp(rec.txHash);
-        auto blockHeight = spv::pspv->ReadTxBlockHeight(rec.txHash);
+        const auto timestamp = spv::pspv->ReadTxTimestamp(rec.txHash);
+        const auto blockHeight = spv::pspv->ReadTxBlockHeight(rec.txHash);
+        const auto blockHash = panchors->ReadBlockHash(rec.btcHeight);
 
         // Do not delete, TX time still pending. If block height is set to max we cannot trust the timestamp.
-        if (timestamp == 0 || blockHeight == std::numeric_limits<int32_t>::max()) {
+        if (timestamp == 0 || blockHeight == std::numeric_limits<int32_t>::max() || blockHash == uint256()) {
             continue;
         }
 
@@ -571,8 +545,7 @@ void CAnchorIndex::CheckPendingAnchors()
         }
 
         // Validate the anchor sigs
-        CPubKey pubKey;
-        if (!rec.anchor.CheckAuthSigs(*anchorTeam)) {
+        if (!rec.anchor.CheckAuthSigs(*anchorTeam, anchorCreationHeight)) {
             LogPrint(BCLog::ANCHORING, "Signature validation fails. Deleting anchor txHash %s\n", rec.txHash.ToString());
             deletePending.insert(rec.txHash);
             continue;
@@ -598,14 +571,13 @@ void CAnchorIndex::CheckActiveAnchor(bool forced)
     // Only continue with context of chain
     if (ShutdownRequested()) return;
 
-    bool topChanged{false};
     {
         // fix spv height to avoid datarace while choosing best anchor
         uint32_t const tmp = spv::pspv ? spv::pspv->GetLastBlockHeight() : 0;
         LOCK(cs_main);
         spvLastHeight = tmp;
 
-        topChanged = panchors->ActivateBestAnchor(forced);
+        panchors->ActivateBestAnchor(forced);
 
         // prune auths older than anchor with 6 confirmations. Warning! This constant are using for start confirming reward too!
         auto it = panchors->GetActiveAnchor();
@@ -620,22 +592,6 @@ void CAnchorIndex::CheckActiveAnchor(bool forced)
             panchorAwaitingConfirms->ReVote();
         }
     }
-
-    // Get height
-    int height{0};
-    {
-        LOCK(cs_main);
-        height = ::ChainActive().Height();
-    }
-
-    // Pre-fork only, anchors for manual checking only after fork.
-    if (height < Params().GetConsensus().DakotaHeight) {
-        CValidationState state;
-        if (topChanged && !ActivateBestChain(state, Params())) {
-            throw std::runtime_error(strprintf("%s: ActivateBestChain failed. (%s)", __func__, FormatStateMessage(state)));
-        }
-    }
-
 }
 
 void CAnchorIndex::UpdateLastHeight(uint32_t height)
@@ -652,14 +608,7 @@ CAnchorIndex::AnchorRec const * BestOfTwo(CAnchorIndex::AnchorRec const * a1, CA
     if (a2 == nullptr)
         return a1;
 
-    if (a1->anchor.height > a2->anchor.height)
-        return a1;
-    else if (a1->anchor.height < a2->anchor.height)
-        return a2;
-    // if heights are equal, return anchor with less btc tx hash
-    else if (a1->txHash < a2->txHash)
-        return a1;
-    return a2;
+    return spv::PendingOrder(*a1, *a2) ? a1 : a2;
 }
 
 /// @returns true if top active anchor has been changed
@@ -752,6 +701,19 @@ bool CAnchorIndex::DeletePendingByBtcTx(uint256 const & btcTxHash)
     }
 
     return false;
+}
+
+bool CAnchorIndex::WriteBlock(const uint32_t height, const uint256& blockHash)
+{
+    // Store Bitcoin block index
+    return db->Write(std::make_pair(DB_BITCOININDEX, height), blockHash);
+}
+
+uint256 CAnchorIndex::ReadBlockHash(const uint32_t& height)
+{
+    uint256 blockHash;
+    db->Read(std::make_pair(DB_BITCOININDEX, height), blockHash);
+    return blockHash;
 }
 
 void CAnchorIndex::ForEachPending(std::function<void (uint256 const &, AnchorRec &)> callback)
@@ -888,7 +850,7 @@ bool ContextualValidateAnchor(const CAnchorData &anchor, CBlockIndex& anchorBloc
     // Make sure height exist
     const auto anchorCreationBlock = ::ChainActive()[anchorCreationHeight];
     if (anchorCreationBlock == nullptr) {
-        LogPrintf("%s: Cannot get block from anchor team data: height %ld\n", __func__, anchorCreationHeight);
+        LogPrint(BCLog::ANCHORING, "%s: Cannot get block from anchor team data: height %ld\n", __func__, anchorCreationHeight);
 
         // Set to max to be used to avoid deleting pending anchor.
         anchorCreationHeight = std::numeric_limits<uint64_t>::max();
@@ -981,7 +943,7 @@ bool CAnchorFinalizationMessage::CheckConfirmSigs()
     return CheckSigs(GetSignHash(), sigs, currentTeam);
 }
 
-bool CAnchorFinalizationMessagePlus::CheckConfirmSigs(const uint32_t height)
+size_t CAnchorFinalizationMessagePlus::CheckConfirmSigs(const uint32_t height)
 {
     auto team = pcustomcsview->GetConfirmTeam(height);
     if (!team) {
@@ -996,7 +958,7 @@ bool CAnchorAwaitingConfirms::EraseAnchor(AnchorTxHash const &txHash)
 
     auto & list = confirms.get<Confirm::ByAnchor>();
     auto count = list.erase(txHash); // should erase ALL with that key. Check it!
-    LogPrintf("AnchorConfirms::EraseAnchor: erase %d confirms for anchor %s\n", count, txHash.ToString());
+    LogPrint(BCLog::ANCHORING, "AnchorConfirms::EraseAnchor: erase %d confirms for anchor %s\n", count, txHash.ToString());
 
     return count > 0;
 }
@@ -1078,15 +1040,11 @@ void CAnchorAwaitingConfirms::ReVote()
     const auto height = ::ChainActive().Height();
 
     CTeamView::CTeam currentTeam;
-    if (height >= Params().GetConsensus().DakotaHeight) {
-        auto team = pcustomcsview->GetConfirmTeam(height);
-        if (team) {
-            currentTeam = *team;
-        } else if (!team || team->empty()) {
-            return;
-        }
-    } else {
-        currentTeam = pcustomcsview->GetCurrentTeam();
+    auto team = pcustomcsview->GetConfirmTeam(height);
+    if (team) {
+        currentTeam = *team;
+    } else if (!team || team->empty()) {
+        return;
     }
 
     const auto operatorDetails = AmISignerNow(currentTeam);
@@ -1114,7 +1072,7 @@ std::vector<CAnchorConfirmMessage> CAnchorAwaitingConfirms::GetQuorumFor(const C
     for (auto it = list.begin(); it != list.end(); /* w/o advance! */) {
         // get next group of confirms
         KList::iterator it0, it1;
-        std::tie(it0,it1) = list.equal_range(std::make_tuple(it->btcTxHash, it->GetSignHash()));
+        std::tie(it0,it1) = list.equal_range(std::make_tuple(it->btcTxHeight, it->btcTxHash));
         if (std::distance(it0,it1) >= quorum) {
             result.clear();
             for (; result.size() < quorum && it0 != it1; ++it0) {
@@ -1160,4 +1118,31 @@ bool GetAnchorEmbeddedData(const CKeyID& data, uint64_t& anchorCreationHeight, s
     memcpy(prefix->data(), &(*(data.begin() + offset)), prefixLength);
 
     return true;
+}
+
+namespace spv
+{
+const PendingOrderType PendingOrder = PendingOrderType([](const CAnchorIndex::AnchorRec& a, const CAnchorIndex::AnchorRec& b)
+{
+    if (a.btcHeight == b.btcHeight)
+    {
+        if (a.anchor.height == b.anchor.height)
+        {
+            if (a.anchor.height >= static_cast<THeight>(Params().GetConsensus().EunosHeight))
+            {
+                const auto blockHash = panchors->ReadBlockHash(a.btcHeight);
+                auto aHash = Hash(a.txHash.begin(), a.txHash.end(), blockHash.begin(), blockHash.end());
+                auto bHash = Hash(b.txHash.begin(), b.txHash.end(), blockHash.begin(), blockHash.end());
+                return aHash < bHash;
+            }
+
+            return a.txHash < b.txHash;
+        }
+
+        // Higher DeFi comes first
+        return a.anchor.height > b.anchor.height;
+    }
+
+    return a.btcHeight < b.btcHeight;
+});
 }
