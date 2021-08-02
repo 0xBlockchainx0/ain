@@ -82,7 +82,7 @@ struct SetForcedRewardAddressMessage {
     }
 };
 
-struct RemoveForcedRewardAddressMessage {
+struct RemForcedRewardAddressMessage {
     uint256 nodeId;
 
     ADD_SERIALIZE_METHODS;
@@ -244,7 +244,7 @@ public:
     Res CreateMasternode(uint256 const & nodeId, CMasternode const & node, uint16_t timelock);
     Res ResignMasternode(uint256 const & nodeId, uint256 const & txid, int height);
     Res SetForcedRewardAddress(uint256 const & nodeId, const char rewardAddressType, CKeyID const & rewardAddress, int height);
-    Res RemoveForcedRewardAddress(uint256 const & nodeId, int height);
+    Res RemForcedRewardAddress(uint256 const & nodeId, int height);
     Res UnCreateMasternode(uint256 const & nodeId);
     Res UnResignMasternode(uint256 const & nodeId, uint256 const & resignTx);
 

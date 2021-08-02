@@ -85,7 +85,7 @@ public:
         );
     }
 
-    void operator()(const RemoveForcedRewardAddressMessage& obj) const {
+    void operator()(const RemForcedRewardAddressMessage& obj) const {
         rpcInfo.pushKV("mc_id", obj.nodeId.GetHex());
     }
 

@@ -31,7 +31,7 @@ std::string ToString(CustomTxType type) {
         case CustomTxType::CreateMasternode:    return "CreateMasternode";
         case CustomTxType::ResignMasternode:    return "ResignMasternode";
         case CustomTxType::SetForcedRewardAddress:    return "SetForcedRewardAddress";
-        case CustomTxType::RemoveForcedRewardAddress: return "RemoveForcedRewardAddress";
+        case CustomTxType::RemForcedRewardAddress: return "RemForcedRewardAddress";
         case CustomTxType::CreateToken:         return "CreateToken";
         case CustomTxType::UpdateToken:         return "UpdateToken";
         case CustomTxType::UpdateTokenAny:      return "UpdateTokenAny";
@@ -108,7 +108,7 @@ CCustomTxMessage customTypeToMessage(CustomTxType txType) {
         case CustomTxType::CreateMasternode:        return CCreateMasterNodeMessage{};
         case CustomTxType::ResignMasternode:        return CResignMasterNodeMessage{};
         case CustomTxType::SetForcedRewardAddress:  return SetForcedRewardAddressMessage{};
-        case CustomTxType::RemoveForcedRewardAddress: return RemoveForcedRewardAddressMessage{};
+        case CustomTxType::RemForcedRewardAddress:  return RemForcedRewardAddressMessage{};
         case CustomTxType::CreateToken:             return CCreateTokenMessage{};
         case CustomTxType::UpdateToken:             return CUpdateTokenPreAMKMessage{};
         case CustomTxType::UpdateTokenAny:          return CUpdateTokenMessage{};
@@ -222,7 +222,7 @@ public:
         return !res ? res : serialize(obj);
     }
 
-    Res operator()(RemoveForcedRewardAddressMessage& obj) const {
+    Res operator()(RemForcedRewardAddressMessage& obj) const {
         auto res = isPostFortCanningFork();
         return !res ? res : serialize(obj);
     }
@@ -771,7 +771,7 @@ public:
         return Res::Ok();
     }
 
-    Res operator()(const RemoveForcedRewardAddressMessage& obj) const {
+    Res operator()(const RemForcedRewardAddressMessage& obj) const {
         auto const node = mnview.GetMasternode(obj.nodeId);
         if (!node) {
             return Res::Err("%s: node %s does not exist", __func__, obj.nodeId.ToString());
@@ -780,7 +780,7 @@ public:
             return Res::Err("%s %s: %s", __func__, obj.nodeId.ToString(), "tx must have at least one input from masternode owner");
         }
 
-        auto res = mnview.RemoveForcedRewardAddress(obj.nodeId, height);
+        auto res = mnview.RemForcedRewardAddress(obj.nodeId, height);
         if (!res.ok) {
             return Res::Err("%s %s: %s", __func__, obj.nodeId.ToString(), res.msg);
         }
