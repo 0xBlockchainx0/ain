@@ -66,7 +66,7 @@ struct ResignMasternodeMessage {
     }
 };
 
-struct SetForcedRewardAddressMessage {
+struct CSetForcedRewardAddressMessage {
     uint256 nodeId;
     char rewardAddressType;
     CKeyID rewardAddress;
@@ -82,7 +82,7 @@ struct SetForcedRewardAddressMessage {
     }
 };
 
-struct RemForcedRewardAddressMessage {
+struct CRemForcedRewardAddressMessage {
     uint256 nodeId;
 
     ADD_SERIALIZE_METHODS;
