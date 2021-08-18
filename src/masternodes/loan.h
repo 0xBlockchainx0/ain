@@ -198,11 +198,57 @@ struct CInterestRate {
     }
 };
 
+class CLoanTakeLoan
+{
+public:
+    CVaultId vaultId;
+    CBalances amounts;
+    CScript ownerAddress;
+
+    ADD_SERIALIZE_METHODS;
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action) {
+        READWRITE(vaultId);
+        READWRITE(amounts);
+        READWRITE(ownerAddress);
+    }
+};
+
+class CLoanTakeLoanImplementation : public CLoanTakeLoan
+{
+public:
+    uint256 creationTx;
+    int32_t creationHeight = -1;
+
+    ADD_SERIALIZE_METHODS;
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action) {
+        READWRITEAS(CLoanTakeLoan, *this);
+        READWRITE(creationTx);
+        READWRITE(creationHeight);
+    }
+};
+
+struct CLoanTakeLoanMessage : public CLoanTakeLoan {
+    using CLoanTakeLoan::CLoanTakeLoan;
+
+    ADD_SERIALIZE_METHODS;
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action) {
+        READWRITEAS(CLoanTakeLoan, *this);
+    }
+};
+
 class CLoanView : public virtual CStorageView {
 public:
     using CollateralTokenKey = std::pair<DCT_ID, uint32_t>;
+    using TakeLoanKey = std::pair<DCT_ID, uint256>;
+
     using CLoanSetCollateralTokenImpl = CLoanSetCollateralTokenImplementation;
     using CLoanSetLoanTokenImpl = CLoanSetLoanTokenImplementation;
+    using CLoanTakeLoanImpl = CLoanTakeLoanImplementation;
 
     std::unique_ptr<CLoanSetCollateralTokenImpl> GetLoanSetCollateralToken(uint256 const & txid) const;
     Res LoanCreateSetCollateralToken(CLoanSetCollateralTokenImpl const & collToken);
@@ -238,6 +284,10 @@ public:
     boost::optional<CBalances> GetLoanTokens(const CVaultId& vaultId);
     void ForEachLoanToken(std::function<bool(const CVaultId&, const CBalances&)> callback);
 
+    std::unique_ptr<CLoanTakeLoanImpl> GetLoanTakeLoan(uint256 const & txid) const;
+    Res LoanTakeLoan(CLoanTakeLoanImpl const & takeLoan);
+    void ForEachLoanTakeLoan(std::function<bool (uint256 const &, CLoanTakeLoanImpl const &)> callback, uint256 const & start = uint256());
+
     struct LoanSetCollateralTokenCreationTx { static const unsigned char prefix; };
     struct LoanSetCollateralTokenKey { static const unsigned char prefix; };
     struct LoanSetLoanTokenCreationTx { static const unsigned char prefix; };
@@ -248,6 +298,8 @@ public:
     struct DestroyLoanSchemeKey { static const unsigned char prefix; };
     struct LoanInterestedRate { static const unsigned char prefix; };
     struct LoanTokenAmount { static const unsigned char prefix; };
+    struct LoanTakeLoanCreationTx { static const unsigned char prefix; };
+    struct LoanTakeLoanKey { static const unsigned char prefix; };
 };
 
 #endif // DEFI_MASTERNODES_LOAN_H

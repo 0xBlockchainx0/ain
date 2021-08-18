@@ -363,6 +363,19 @@ public:
         rpcInfo.pushKV("isunderliquidation", vaultRes.val->isUnderLiquidation);
     }
 
+    void operator()(const CLoanTakeLoanMessage& obj) const {
+        rpcInfo.pushKV("vaultId", obj.vaultId.GetHex());
+        for (auto const & kv : obj.amounts.balances) {
+            if (auto token = mnview.GetToken(kv.first)) {
+                auto tokenImpl = static_cast<CTokenImplementation const&>(*token);
+                if (auto tokenPair = mnview.GetTokenByCreationTx(tokenImpl.creationTx)) {
+                    rpcInfo.pushKV(tokenPair->first.ToString(), ValueFromAmount(kv.second));
+                }
+            }
+        }
+        rpcInfo.pushKV("ownerAddress", HexStr(obj.ownerAddress));
+    }
+
     void operator()(const CCustomTxMessageNone&) const {
     }
 };

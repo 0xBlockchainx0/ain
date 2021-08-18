@@ -64,6 +64,7 @@ std::string ToString(CustomTxType type) {
         case CustomTxType::DestroyLoanScheme:   return "DestroyLoanScheme";
         case CustomTxType::Vault:               return "Vault";
         case CustomTxType::UpdateVault:         return "UpdateVault";
+        case CustomTxType::LoanTakeLoan:        return "LoanTakeLoan";
         case CustomTxType::None:                return "None";
     }
     return "None";
@@ -147,6 +148,7 @@ CCustomTxMessage customTypeToMessage(CustomTxType txType) {
         case CustomTxType::DestroyLoanScheme:       return CDestroyLoanSchemeMessage{};
         case CustomTxType::Vault:                   return CVaultMessage{};
         case CustomTxType::UpdateVault:             return CUpdateVaultMessage{};
+        case CustomTxType::LoanTakeLoan:            return CLoanTakeLoanMessage{};
         case CustomTxType::None:                    return CCustomTxMessageNone{};
     }
     return CCustomTxMessageNone{};
@@ -444,6 +446,11 @@ public:
     }
 
     Res operator()(CUpdateVaultMessage& obj) const {
+        auto res = isPostFortCanningFork();
+        return !res ? res : serialize(obj);
+    }
+
+    Res operator()(CLoanTakeLoanMessage& obj) const {
         auto res = isPostFortCanningFork();
         return !res ? res : serialize(obj);
     }
@@ -2086,6 +2093,45 @@ public:
         vault.val->schemeId = obj.schemeId;
         vault.val->ownerAddress = obj.ownerAddress;
         return mnview.StoreVault(obj.vaultId, *vault.val);
+    }
+
+    Res operator()(const CLoanTakeLoanMessage& obj) const {
+        auto res = CheckCustomTx();
+        if (!res)
+            return res;
+
+        auto vault = mnview.GetVault(obj.vaultId);
+        if (!vault)
+            return Res::Err("Cannot find existing vault with id %s", obj.vaultId.GetHex());
+
+        if(vault.val->isUnderLiquidation)
+            return Res::Err("Cannot take loan on vault under liquidation");
+
+        auto collaterals = mnview.GetVaultCollaterals(obj.vaultId);
+
+        if (!collaterals)
+            return Res::Err("Vault with id %s has no collaterals", obj.vaultId.GetHex());
+
+        for (const auto& kv : obj.amounts.balances)
+        {
+            DCT_ID tokenId = kv.first;
+            auto loanToken = pcustomcsview->GetLoanSetLoanTokenByID(tokenId);
+            if (!loanToken)
+                return Res::Err("Loan token (%s) does not exist!", tokenId.ToString());
+
+            res = mnview.AddLoanToken(obj.vaultId, CTokenAmount{kv.first, kv.second});
+            if (!res)
+                return res;
+
+            if (!mnview.CalculateCollateralizationRatio(obj.vaultId, *collaterals, static_cast<int>(height)))
+                return Res::Err("Vault does not have enough collateralization ratio defined by loan scheme");
+
+            res = mnview.AddBalance(obj.ownerAddress, CTokenAmount{kv.first, kv.second});
+            if (!res)
+                return res;
+        }
+
+        return Res::Ok();
     }
 
     Res operator()(const CCustomTxMessageNone&) const {

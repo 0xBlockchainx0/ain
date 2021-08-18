@@ -12,6 +12,7 @@ const unsigned char CLoanView::LoanSetLoanTokenCreationTx                 ::pref
 const unsigned char CLoanView::LoanSetLoanTokenKey                        ::prefix = 0x17;
 const unsigned char CLoanView::LoanInterestedRate                         ::prefix = 0x18;
 const unsigned char CLoanView::LoanTokenAmount                            ::prefix = 0x19;
+const unsigned char CLoanView::LoanTakeLoanCreationTx                     ::prefix = 0x22;
 
 std::unique_ptr<CLoanView::CLoanSetCollateralTokenImpl> CLoanView::GetLoanSetCollateralToken(uint256 const & txid) const
 {
@@ -300,4 +301,28 @@ boost::optional<CBalances> CLoanView::GetLoanTokens(const CVaultId& vaultId)
 void CLoanView::ForEachLoanToken(std::function<bool(const CVaultId&, const CBalances&)> callback)
 {
     ForEach<LoanTokenAmount, CVaultId, CBalances>(callback);
+}
+
+std::unique_ptr<CLoanView::CLoanTakeLoanImpl> CLoanView::GetLoanTakeLoan(uint256 const & txid) const
+{
+    auto takeLoan = ReadBy<LoanSetCollateralTokenCreationTx,CLoanTakeLoanImpl>(txid);
+    if (takeLoan)
+        return MakeUnique<CLoanTakeLoanImpl>(*takeLoan);
+    return {};
+}
+
+Res CLoanView::LoanTakeLoan(CLoanTakeLoanImpl const & takeLoan)
+{
+    //this should not happen, but for sure
+    if (GetLoanTakeLoan(takeLoan.creationTx))
+        return Res::Err("takeLoan with creation tx %s already exists!", takeLoan.creationTx.GetHex());
+
+    WriteBy<LoanTakeLoanCreationTx>(takeLoan.creationTx, takeLoan);
+
+    return Res::Ok();
+}
+
+void CLoanView::ForEachLoanTakeLoan(std::function<bool (uint256 const &, CLoanTakeLoanImpl const &)> callback, uint256 const & start)
+{
+    ForEach<LoanTakeLoanCreationTx, uint256, CLoanTakeLoanImpl>(callback, start);
 }
