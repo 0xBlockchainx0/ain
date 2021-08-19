@@ -2100,12 +2100,17 @@ public:
         if (!res)
             return res;
 
-        auto vault = mnview.GetVault(obj.vaultId);
+        const auto vault = mnview.GetVault(obj.vaultId);
         if (!vault)
             return Res::Err("Cannot find existing vault with id %s", obj.vaultId.GetHex());
 
         if(vault.val->isUnderLiquidation)
             return Res::Err("Cannot take loan on vault under liquidation");
+
+        // vault owner auth
+        if (!HasAuth(vault.val->ownerAddress)) {
+            return Res::Err("tx must have at least one input from vault owner");
+        }
 
         auto collaterals = mnview.GetVaultCollaterals(obj.vaultId);
 
@@ -2126,7 +2131,7 @@ public:
             if (!mnview.CalculateCollateralizationRatio(obj.vaultId, *collaterals, static_cast<int>(height)))
                 return Res::Err("Vault does not have enough collateralization ratio defined by loan scheme");
 
-            res = mnview.AddBalance(obj.ownerAddress, CTokenAmount{kv.first, kv.second});
+            res = mnview.AddBalance(vault.val->ownerAddress, CTokenAmount{kv.first, kv.second});
             if (!res)
                 return res;
         }

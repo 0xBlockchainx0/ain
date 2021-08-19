@@ -949,7 +949,6 @@ UniValue takeloan(const JSONRPCRequest& request) {
                         {
                             {"vaultid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "Id of vault used for loan"},
                             {"amounts", RPCArg::Type::STR, RPCArg::Optional::NO, "Amount in amount@token format."},
-                            {"ownerAddress", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "Destination address for loan token"},
                         },
                     },
                     {"inputs", RPCArg::Type::ARR, RPCArg::Optional::OMITTED_NAMED_ARG,
@@ -995,14 +994,17 @@ UniValue takeloan(const JSONRPCRequest& request) {
         takeLoan.vaultId = uint256S(metaObj["vaultId"].getValStr());
     else
         throw JSONRPCError(RPC_INVALID_PARAMETER,"Invalid parameters, argument \"vaultId\" must be non-null");
+
+    // Get vault if exists, vault owner used as auth.
+    auto vault = pcustomcsview->GetVault(takeLoan.vaultId);
+    if (!vault) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,"Cannot find existing vault with id " + takeLoan.vaultId.GetHex());
+    }
+
     if (!metaObj["amounts"].isNull())
         loaned = DecodeAmounts(pwallet->chain(), metaObj["amounts"], "");
     else
         throw JSONRPCError(RPC_INVALID_PARAMETER,"Invalid parameters, argument \"amounts\" must not be null");
-    if (!metaObj["ownerAddress"].isNull())
-        takeLoan.ownerAddress = DecodeScript(metaObj["ownerAddress"].getValStr());
-    else
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameters, argument \"ownerAddress\" must be specified");
 
     int targetHeight;
     {
@@ -1022,10 +1024,10 @@ UniValue takeloan(const JSONRPCRequest& request) {
     CMutableTransaction rawTx(txVersion);
 
     CTransactionRef optAuthTx;
-    std::set<CScript> auths;
-    rawTx.vin = GetAuthInputsSmart(pwallet, rawTx.nVersion, auths, true, optAuthTx, txInputs);
+    std::set<CScript> auths{vault.val->ownerAddress};
+    rawTx.vin = GetAuthInputsSmart(pwallet, rawTx.nVersion, auths, false, optAuthTx, txInputs);
 
-    rawTx.vout.push_back(CTxOut(0, scriptMeta));
+    rawTx.vout.emplace_back(0, scriptMeta);
 
     CCoinControl coinControl;
 

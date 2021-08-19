@@ -373,7 +373,6 @@ public:
                 }
             }
         }
-        rpcInfo.pushKV("ownerAddress", HexStr(obj.ownerAddress));
     }
 
     void operator()(const CCustomTxMessageNone&) const {

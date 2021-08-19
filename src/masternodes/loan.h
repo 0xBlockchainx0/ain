@@ -203,7 +203,6 @@ class CLoanTakeLoan
 public:
     CVaultId vaultId;
     CBalances amounts;
-    CScript ownerAddress;
 
     ADD_SERIALIZE_METHODS;
 
@@ -211,7 +210,6 @@ public:
     inline void SerializationOp(Stream& s, Operation ser_action) {
         READWRITE(vaultId);
         READWRITE(amounts);
-        READWRITE(ownerAddress);
     }
 };
 
