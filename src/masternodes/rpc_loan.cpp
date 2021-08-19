@@ -987,8 +987,6 @@ UniValue takeloan(const JSONRPCRequest& request) {
     UniValue const & txInputs = request.params[1];
 
     CLoanTakeLoan takeLoan;
-    std::string tokenSymbol;
-    CBalances loaned;
 
     if (!metaObj["vaultId"].isNull())
         takeLoan.vaultId = uint256S(metaObj["vaultId"].getValStr());
@@ -1002,7 +1000,7 @@ UniValue takeloan(const JSONRPCRequest& request) {
     }
 
     if (!metaObj["amounts"].isNull())
-        loaned = DecodeAmounts(pwallet->chain(), metaObj["amounts"], "");
+        takeLoan.amounts = DecodeAmounts(pwallet->chain(), metaObj["amounts"], "");
     else
         throw JSONRPCError(RPC_INVALID_PARAMETER,"Invalid parameters, argument \"amounts\" must not be null");
 
