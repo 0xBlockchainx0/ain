@@ -283,7 +283,7 @@ public:
     void ForEachLoanToken(std::function<bool(const CVaultId&, const CBalances&)> callback);
 
     std::unique_ptr<CLoanTakeLoanImpl> GetLoanTakeLoan(uint256 const & txid) const;
-    Res LoanTakeLoan(CLoanTakeLoanImpl const & takeLoan);
+    Res SetLoanTakeLoan(CLoanTakeLoanImpl const & takeLoan);
     void ForEachLoanTakeLoan(std::function<bool (uint256 const &, CLoanTakeLoanImpl const &)> callback, uint256 const & start = uint256());
 
     struct LoanSetCollateralTokenCreationTx { static const unsigned char prefix; };

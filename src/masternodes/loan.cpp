@@ -305,18 +305,14 @@ void CLoanView::ForEachLoanToken(std::function<bool(const CVaultId&, const CBala
 
 std::unique_ptr<CLoanView::CLoanTakeLoanImpl> CLoanView::GetLoanTakeLoan(uint256 const & txid) const
 {
-    auto takeLoan = ReadBy<LoanSetCollateralTokenCreationTx,CLoanTakeLoanImpl>(txid);
+    auto takeLoan = ReadBy<LoanTakeLoanCreationTx,CLoanTakeLoanImpl>(txid);
     if (takeLoan)
         return MakeUnique<CLoanTakeLoanImpl>(*takeLoan);
     return {};
 }
 
-Res CLoanView::LoanTakeLoan(CLoanTakeLoanImpl const & takeLoan)
+Res CLoanView::SetLoanTakeLoan(CLoanTakeLoanImpl const & takeLoan)
 {
-    //this should not happen, but for sure
-    if (GetLoanTakeLoan(takeLoan.creationTx))
-        return Res::Err("takeLoan with creation tx %s already exists!", takeLoan.creationTx.GetHex());
-
     WriteBy<LoanTakeLoanCreationTx>(takeLoan.creationTx, takeLoan);
 
     return Res::Ok();

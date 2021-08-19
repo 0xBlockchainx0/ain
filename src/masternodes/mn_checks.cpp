@@ -2120,7 +2120,7 @@ public:
         for (const auto& kv : obj.amounts.balances)
         {
             DCT_ID tokenId = kv.first;
-            auto loanToken = pcustomcsview->GetLoanSetLoanTokenByID(tokenId);
+            auto loanToken = mnview.GetLoanSetLoanTokenByID(tokenId);
             if (!loanToken)
                 return Res::Err("Loan token (%s) does not exist!", tokenId.ToString());
 
@@ -2135,6 +2135,14 @@ public:
             if (!res)
                 return res;
         }
+
+        // Write take loan to storage
+        CLoanView::CLoanTakeLoanImpl takeLoan;
+        takeLoan.vaultId = obj.vaultId;
+        takeLoan.amounts = obj.amounts;
+        takeLoan.creationHeight = height;
+        takeLoan.creationTx = tx.GetHash();
+        mnview.SetLoanTakeLoan(takeLoan);
 
         return Res::Ok();
     }
